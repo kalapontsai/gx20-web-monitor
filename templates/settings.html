@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<title>GX20 設定</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=2">
+</head>
+<body data-theme="light">
+
+<header class="topbar">
+  <span class="brand">GX20 設定</span>
+  <a href="/" class="btn">回監看</a>
+  <button id="saveBtn" class="btn" data-role="save-btn">保存</button>
+  <button id="clearDbBtn" class="btn btn-danger">立即清除 SQLite</button>
+  <button id="themeBtn" class="btn" title="切換明亮/暗黑">☀/🌙</button>
+</header>
+
+<div class="settings-wrap">
+  <h1>GX20 監視 — 設定</h1>
+
+  <!-- ====== 1. GX20 連線 ====== -->
+  <h2>1. GX20 連線</h2>
+  <div class="card">
+    <div class="row">
+      <label>Host</label>
+      <input type="text" id="gx20_host" value="192.168.1.1">
+    </div>
+    <div class="row">
+      <label>Port</label>
+      <input type="number" id="gx20_port" value="34434">
+    </div>
+  </div>
+
+  <!-- ====== 2. Y 軸範圍 ====== -->
+  <h2>2. Y 軸範圍</h2>
+  <div class="card">
+    <div class="row">
+      <label>最小值 (°C)</label>
+      <input type="number" id="y_axis_min" value="-20" step="1">
+    </div>
+    <div class="row">
+      <label>最大值 (°C)</label>
+      <input type="number" id="y_axis_max" value="100" step="1">
+    </div>
+    <div class="row">
+      <label>歷史視窗 (分鐘)</label>
+      <input type="number" id="history_minutes" value="60" min="1" step="1">
+    </div>
+  </div>
+
+  <!-- ====== 3. 計算時間長度 ====== -->
+  <h2>3. 計算時間長度</h2>
+  <div class="card">
+    <div class="row">
+      <label>升降速率 (分鐘)</label>
+      <input type="number" id="rate_window_min" value="5" min="1" step="1">
+    </div>
+    <div class="row">
+      <label>平均值 (分鐘)</label>
+      <input type="number" id="avg_window_min" value="10" min="1" step="1">
+    </div>
+  </div>
+
+  <!-- ====== 3.5 資料保留 ====== -->
+  <h2>3.5 資料保留</h2>
+  <div class="card">
+    <div class="row">
+      <label>DB 保留天數</label>
+      <input type="number" id="retention_days" value="7" min="1" max="30" step="1">
+      <span style="color: var(--text-mute); font-size: 12px;">（超過天數的資料自動刪除）</span>
+    </div>
+    <div class="row">
+      <label>圖表最大顯示點數</label>
+      <input type="number" id="max_points" value="2000" min="200" max="10000" step="100">
+      <span style="color: var(--text-mute); font-size: 12px;">（超過自動 LTTB 降取樣）</span>
+    </div>
+  </div>
+
+  <!-- ====== 4. 接點設定 ====== -->
+  <h2>4. 接點設定</h2>
+  <div class="card">
+    <div class="station-tabs" id="stationTabs"></div>
+    <div class="ch-toolbar">
+      <label class="all-toggle-label">
+        <input type="checkbox" id="allToggle">
+        <span>全部開啟 / 隱藏</span>
+      </label>
+    </div>
+    <div id="chGrid" class="ch-grid"></div>
+  </div>
+
+  <p style="color: var(--text-mute); font-size: 12px; margin-top: 20px;">
+    ※ 所有變更僅存在本分頁的 session 暫存，按「保存」後才寫入伺服器。
+  </p>
+</div>
+
+<script src="{{ url_for('static', filename='js/storage.js') }}?v=2"></script>
+<script src="{{ url_for('static', filename='js/colorpicker.js') }}?v=2"></script>
+<script>
+  // 從 server 端模板注入（全頁共用的設定）
+  window.GX20Config = {
+    stations: {{ stations|tojson }},
+    points:   {{ points_per_station }},
+  };
+</script>
+<script src="{{ url_for('static', filename='js/settings.js') }}?v=2"></script>
+</body>
+</html>

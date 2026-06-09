@@ -1,0 +1,233 @@
+// storage.js — 跨頁設定儲存層
+//
+// 兩種儲存：
+//   - sessionStorage["gx20.tab_state.v1"]  → 每個分頁一份，「未保存」的設定
+//   - server (POST /api/settings)          → 按下「保存」後才寫入
+//
+// 進入頁面時：
+//   1. 從 server 拉預設值（baseline）
+//   2. 若 sessionStorage 有，用 session 的覆蓋
+//   3. 套用主題（theme 也存在 session）
+//
+// 使用者改任何值 → sessionStorage + 標記 dirty
+// 按「保存」   → POST 到 server + 清 dirty
+
+(function (window) {
+  "use strict";
+
+  const SESSION_KEY = "gx20.tab_state.v1";
+
+  // ---------- theme 套用 ----------
+  function applyTheme(theme) {
+    document.body.setAttribute("data-theme", theme || "light");
+  }
+
+  function detectInitialTheme() {
+    // 跟系統 prefers-color-scheme
+    if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) {
+      return "dark";
+    }
+    return "light";
+  }
+
+  // ---------- session 讀寫 ----------
+  function loadSession() {
+    try { return JSON.parse(sessionStorage.getItem(SESSION_KEY) || "{}"); }
+    catch { return {}; }
+  }
+  function saveSession(patch) {
+    const cur = loadSession();
+    const next = Object.assign({}, cur, patch);
+    sessionStorage.setItem(SESSION_KEY, JSON.stringify(next));
+    window.GX20State.markDirty();
+  }
+  function clearSession() {
+    sessionStorage.removeItem(SESSION_KEY);
+  }
+
+  // ---------- dirty 標記 ----------
+  // 任何分頁自己改的，與 server 不同，就是 dirty
+  // 用 sessionStorage 存一份「已保存的快照」，按下保存就更新快照
+
+  function snapshotEqual(a, b) {
+    return JSON.stringify(a) === JSON.stringify(b);
+  }
+
+  function markDirtyIfChanged(sess) {
+    const saved = sess._saved || null;
+    const cur = {
+      ch_visibility: sess.ch_visibility,
+      ch_alias:      sess.ch_alias,
+      ch_color:      sess.ch_color,
+      gx20_host:     sess.gx20_host,
+      gx20_port:     sess.gx20_port,
+      y_axis_min:    sess.y_axis_min,
+      y_axis_max:    sess.y_axis_max,
+      rate_window_min: sess.rate_window_min,
+      avg_window_min:  sess.avg_window_min,
+      history_minutes: sess.history_minutes,
+      retention_days:  sess.retention_days,
+      max_points:      sess.max_points,
+      theme:         sess.theme,
+    };
+    if (saved === null) {
+      // 首次進來還沒保存過
+      window.GX20State.dirty = false;     // 視為乾淨（與 server 預設一致）
+      return;
+    }
+    window.GX20State.dirty = !snapshotEqual(cur, saved);
+  }
+
+  // ---------- UI 反映 dirty ----------
+  function refreshSaveButtons() {
+    const btns = document.querySelectorAll("[data-role=save-btn]");
+    btns.forEach(b => {
+      if (window.GX20State.dirty) {
+        b.classList.add("btn-dirty");
+        b.textContent = "保存 ●";
+      } else {
+        b.classList.remove("btn-dirty");
+        b.textContent = "保存";
+      }
+    });
+  }
+
+  // ---------- 對外介面 ----------
+  const GX20State = {
+    settings: null,             // 合併後的「目前生效」設定
+    baseline: null,             // server 端的 baseline
+    sess: loadSession(),        // session 暫存
+    dirty: false,
+    theme: null,
+
+    /**
+     * 初始化：拉 server → 套 session → 套主題
+     * 回傳合併後的 settings 物件
+     */
+    async init() {
+      // 1. server
+      const r = await fetch("/api/settings");
+      const srv = await r.json();
+      this.baseline = srv;
+
+      // 2. session 預設值
+      this.sess = loadSession();
+      this.theme = this.sess.theme || detectInitialTheme();
+      applyTheme(this.theme);
+
+      // 3. 合併：session 為主，未設定的從 server 補
+      this.settings = Object.assign({}, srv);
+      for (const k of Object.keys(this.sess)) {
+        if (k.startsWith("_") || k === "theme") continue;
+        if (this.sess[k] !== undefined) this.settings[k] = this.sess[k];
+      }
+
+      // 4. dirty 檢查
+      markDirtyIfChanged(this.sess);
+      refreshSaveButtons();
+
+      if (window.console && console.debug) {
+        console.debug("[GX20State] init: sess keys=", Object.keys(this.sess),
+          "settings.ch_visibility[工位1][0..4]=",
+          this.settings.ch_visibility["工位1"].slice(0,5));
+      }
+
+      return this.settings;
+    },
+
+    /**
+     * 使用者改了某個欄位 → 同步進 settings + 寫 session + 標 dirty
+     * 傳 key, value；對 ch_visibility/alias/color 會以「整個工位物件」覆寫
+     */
+    update(key, value) {
+      // 用深拷貝避免外部變動了傳入的物件後、sessionStorage 還是指到同一個
+      const deep = JSON.parse(JSON.stringify(value));
+      this.settings[key] = deep;
+      this.sess[key] = deep;
+      sessionStorage.setItem(SESSION_KEY, JSON.stringify(this.sess));
+      this.dirty = true;
+      refreshSaveButtons();
+    },
+
+    /**
+     * 切換主題（立即生效）
+     */
+    setTheme(theme) {
+      this.theme = theme;
+      this.sess.theme = theme;
+      sessionStorage.setItem(SESSION_KEY, JSON.stringify(this.sess));
+      applyTheme(theme);
+      // 主題變更不視為 dirty（純 UI），但要刷新按鈕狀態
+      refreshSaveButtons();
+    },
+
+    /**
+     * 「保存」：把目前 session 寫到 server
+     */
+    async save() {
+      // 整包 POST
+      const payload = {
+        gx20_host:      this.settings.gx20_host,
+        gx20_port:      this.settings.gx20_port,
+        y_axis_min:     this.settings.y_axis_min,
+        y_axis_max:     this.settings.y_axis_max,
+        rate_window_min: this.settings.rate_window_min,
+        avg_window_min:  this.settings.avg_window_min,
+        history_minutes: this.settings.history_minutes,
+        retention_days: this.settings.retention_days,
+        max_points: this.settings.max_points,
+        ch_visibility:  this.settings.ch_visibility,
+        ch_alias:       this.settings.ch_alias,
+        ch_color:       this.settings.ch_color,
+        theme:          this.theme,
+      };
+      const r = await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error || "save failed");
+      // ✅ 關鍵修正：把實際設定值也寫回 sessionStorage 的頂層 key
+      // 否則 init() 合併時讀不到 ch_visibility/alias/color，全退回 server 預設
+      this.sess.ch_visibility  = payload.ch_visibility;
+      this.sess.ch_alias       = payload.ch_alias;
+      this.sess.ch_color       = payload.ch_color;
+      this.sess.gx20_host      = payload.gx20_host;
+      this.sess.gx20_port      = payload.gx20_port;
+      this.sess.y_axis_min     = payload.y_axis_min;
+      this.sess.y_axis_max     = payload.y_axis_max;
+      this.sess.rate_window_min = payload.rate_window_min;
+      this.sess.avg_window_min  = payload.avg_window_min;
+      this.sess.history_minutes = payload.history_minutes;
+      this.sess.retention_days  = payload.retention_days;
+      this.sess.max_points      = payload.max_points;
+      this.sess.theme          = payload.theme;
+      // 記下「已保存的快照」供 dirty 比較
+      this.sess._saved = {
+        ch_visibility: payload.ch_visibility,
+        ch_alias:      payload.ch_alias,
+        ch_color:      payload.ch_color,
+        gx20_host:     payload.gx20_host,
+        gx20_port:     payload.gx20_port,
+        y_axis_min:    payload.y_axis_min,
+        y_axis_max:    payload.y_axis_max,
+        rate_window_min: payload.rate_window_min,
+        avg_window_min:  payload.avg_window_min,
+        history_minutes: payload.history_minutes,
+        retention_days:  payload.retention_days,
+        max_points:      payload.max_points,
+        theme:         payload.theme,
+      };
+      sessionStorage.setItem(SESSION_KEY, JSON.stringify(this.sess));
+      this.baseline = Object.assign({}, this.settings);
+      this.dirty = false;
+      refreshSaveButtons();
+      return j;
+    },
+
+    markDirty() { this.dirty = true; refreshSaveButtons(); },
+  };
+
+  window.GX20State = GX20State;
+})(window);

@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<title>GX20 溫度監視</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=2">
+<script src="{{ url_for('static', filename='vendor/chart.umd.min.js') }}"></script>
+<script src="{{ url_for('static', filename='vendor/chartjs-adapter-date-fns.bundle.min.js') }}"></script>
+<script src="{{ url_for('static', filename='vendor/socket.io.min.js') }}"></script>
+</head>
+<body data-theme="light">
+
+<header class="topbar">
+  <span class="brand">GX20 溫度監視</span>
+  <label>站點：
+    <select id="stationSelect">
+      {% for s in stations %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
+    </select>
+  </label>
+  <a href="/settings" class="btn">設定</a>
+  <button id="saveBtn" class="btn" data-role="save-btn">保存</button>
+  <button id="clearBtn" class="btn btn-danger">清除資料</button>
+  <button id="themeBtn" class="btn" title="切換明亮/暗黑">☀/🌙</button>
+  <span class="conn">
+    <span id="connDot" class="dot off"></span>
+    <span id="connText">連線中…</span>
+  </span>
+  <span class="last-ts" id="lastTs">—</span>
+</header>
+
+<main>
+  <section class="chart-area">
+    <div class="chart-title" id="chartTitle">—</div>
+    <canvas id="chart"></canvas>
+    <div class="chart-legend-note">實線=溫度分布、虛線=升降速率(°C/min，右軸)、點線=平均值</div>
+  </section>
+
+  <aside class="readout">
+    <h3>最新讀值</h3>
+    <table id="readoutTable">
+      <thead><tr>
+        <th>#</th>
+        <th>名稱/別名</th>
+        <th>讀值 (°C)</th>
+        <th>速率 (°C/min)</th>
+        <th>平均 (°C)</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </aside>
+</main>
+
+<script src="{{ url_for('static', filename='js/storage.js') }}?v=2"></script>
+<script src="{{ url_for('static', filename='js/lttb.js') }}?v=2"></script>
+<script src="{{ url_for('static', filename='js/main.js') }}?v=2"></script>
+</body>
+</html>
