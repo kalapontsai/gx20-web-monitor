@@ -29,6 +29,8 @@ data/
 *.db-shm
 *.log
 nohup.out
+logs/                       # debug logger 輸出
 
 # Local config overrides
 .env
+config/settings.json        # 使用者實際設定（可能含個資別名）；保留 settings.example.json

@@ -21,7 +21,7 @@
     </select>
   </label>
   <a href="/settings" class="btn">設定</a>
-  <button id="saveBtn" class="btn" data-role="save-btn">保存</button>
+  <button id="exportCsvBtn" class="btn" title="將當前工位記錄儲存為 CSV">儲存 CSV</button>
   <button id="clearBtn" class="btn btn-danger">清除資料</button>
   <button id="themeBtn" class="btn" title="切換明亮/暗黑">☀/🌙</button>
   <span class="conn">
@@ -33,20 +33,56 @@
 
 <main>
   <section class="chart-area">
-    <div class="chart-title" id="chartTitle">—</div>
     <canvas id="chart"></canvas>
-    <div class="chart-legend-note">實線=溫度分布、虛線=升降速率(°C/min，右軸)、點線=平均值</div>
   </section>
 
   <aside class="readout">
     <h3>最新讀值</h3>
+    <div class="readout-controls">
+      <label>X 軸：
+        <select id="chartXSel">
+          <option value="0">全部</option>
+          <option value="15">15 分鐘</option>
+          <option value="30">30 分鐘</option>
+          <option value="60">1 小時</option>
+          <option value="180">3 小時</option>
+          <option value="360">6 小時</option>
+          <option value="720">12 小時</option>
+          <option value="1440">1 天</option>
+        </select>
+      </label>
+      <label>速率：
+        <select id="rateSel">
+          <option value="1">1 分鐘</option>
+          <option value="2">2 分鐘</option>
+          <option value="5">5 分鐘</option>
+          <option value="10">10 分鐘</option>
+          <option value="15">15 分鐘</option>
+          <option value="30">30 分鐘</option>
+          <option value="60">60 分鐘</option>
+        </select>
+      </label>
+      <label>平均：
+        <select id="avgSel">
+          <option value="1">1 分鐘</option>
+          <option value="2">2 分鐘</option>
+          <option value="5">5 分鐘</option>
+          <option value="10">10 分鐘</option>
+          <option value="15">15 分鐘</option>
+          <option value="30">30 分鐘</option>
+          <option value="60">60 分鐘</option>
+          <option value="180">3 小時</option>
+          <option value="360">6 小時</option>
+        </select>
+      </label>
+    </div>
     <table id="readoutTable">
       <thead><tr>
         <th>#</th>
         <th>名稱/別名</th>
         <th>讀值 (°C)</th>
-        <th>速率 (°C/min)</th>
-        <th>平均 (°C)</th>
+        <th id="rateTh">速率 (°C/1min)</th>
+        <th id="avgTh">平均 (°C/1min)</th>
       </tr></thead>
       <tbody></tbody>
     </table>

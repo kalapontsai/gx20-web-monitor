@@ -4,7 +4,9 @@
 >
 > 6 工位 × 20 接點 = 120 點，每 10 秒取樣一次，**可持續記錄 7 天以上**
 >
-> v2.0 改版重點：資料持久化、LTTB 降取樣、明暗主題、ring buffer 計算
+> **v3.0** 改版重點：debug logger、圖表精簡、X 軸範圍動態、CSV 整合匯出、設定檔同步
+>
+> **v2.0** 改版重點：資料持久化、LTTB 降取樣、明暗主題、ring buffer 計算
 
 ---
 
@@ -12,19 +14,21 @@
 
 1. [專案概述](#1-專案概述)
 2. [與桌面版差異](#2-與桌面版差異)
-3. [系統架構](#3-系統架構)
-4. [技術選型](#4-技術選型)
-5. [資料模型](#5-資料模型-sqlite-schema)
-6. [模組設計](#6-模組設計)
-7. [資料生命週期（v2 改版重點）](#7-資料生命週期v2-改版重點)
-8. [效能與降取樣策略](#8-效能與降取樣策略)
-9. [前端 UI 與互動](#9-前端-ui-與互動)
-10. [路由與 API](#10-路由與-api)
-11. [設定頁欄位](#11-設定頁欄位)
-12. [主題系統（light / dark）](#12-主題系統light--dark)
-13. [執行方式](#13-執行方式)
-14. [故障排除](#14-故障排除)
-15. [已知限制](#15-已知限制)
+3. [v3 / v4 改版總覽](#3-v3--v4-改版總覽)
+4. [系統架構](#4-系統架構)
+5. [技術選型](#5-技術選型)
+6. [資料模型（SQLite Schema）](#6-資料模型sqlite-schema)
+7. [模組設計](#7-模組設計)
+8. [設定同步檔 config/settings.json](#8-設定同步檔-configsettingsjson)
+9. [資料生命週期](#9-資料生命週期)
+10. [效能與降取樣策略](#10-效能與降取樣策略)
+11. [前端 UI 與互動](#11-前端-ui-與互動)
+12. [路由與 API](#12-路由與-api)
+13. [設定頁欄位](#13-設定頁欄位)
+14. [主題系統（light / dark）](#14-主題系統light--dark)
+15. [執行方式](#15-執行方式)
+16. [故障排除](#16-故障排除)
+17. [已知限制](#17-已知限制)
 
 ---
 
@@ -34,11 +38,16 @@
 
 - **6 個工位 × 20 個溫度接點**（共 120 點）即時溫度監看
 - 每 10 秒取樣一次，**資料以 SQLite 持久保存**（預設保留 7 天）
-- 即時趨勢圖：溫度分布（實線）、升降速率（虛線，右軸 °C/min）、平均值（點線）
-- 網頁式設定：站點選擇、接點顯示/隱藏、別名、256 色盤選色、Y 軸範圍、計算時間長度
+- 即時趨勢圖：**20 條溫度線**（圖例隱藏，顯示/隱藏統一在設定頁管理）
+- 右側「最新讀值」表格：名稱、讀值、**速率 (°C/N 分鐘)**、**平均 (°C/N 分鐘)**
+- 主畫面內可直接下拉調整：X 軸範圍、速率/平均計算區間
+- 網頁式設定：站點選擇、接點顯示/隱藏、別名、256 色盤選色、Y 軸範圍
 - 明亮 / 暗黑主題切換
+- CSV 匯出：依目前 X 軸範圍，原始 10 秒/筆自動平均整合為 1 分鐘/筆
 - 多瀏覽器分頁透過 SocketIO 自動同步
-- 「每分頁 session 暫存」+「全域 SQLite 持久保存」雙層架構
+- Debug logger：寫到 `logs/app.log`，可從設定頁或 API 動態切換等級
+- 設定值同步存成 `config/settings.json`，重新啟動自動套用
+- 「每分頁 session 暫存」+「全域 SQLite / JSON 持久保存」三層架構
 
 ### 不在範圍
 
@@ -55,51 +64,100 @@
 
 ## 2. 與桌面版差異
 
-| 功能 | 桌面版 `GX20_PW3335.py` | 本網頁版 v2 |
+| 功能 | 桌面版 `GX20_PW3335.py` | 本網頁版 v3 |
 |---|---|---|
 | GUI 框架 | Tkinter | HTML / CSS / JS |
 | 圖表 | matplotlib（後端算圖） | Chart.js（前端算圖） |
-| 資料儲存 | CSV 檔 | SQLite（持久） |
+| 圖表曲線 | 溫度 + 速率 + 平均（三層）| **只畫溫度 20 條**；速率/平均改在右側表格 |
+| 圖表圖例 | 預設顯示 | **隱藏**（顯示/隱藏統一在設定頁）|
+| 資料儲存 | CSV 檔 | SQLite（持久）|
 | 資料生命週期 | 永久累積在 CSV | SQLite 預設保留 7 天 |
-| 關閉清除 | 不會 | **不會**（改用手動按鈕） |
+| 關閉清除 | 不會 | **不會**（改用手動按鈕）|
 | 取樣頻率 | 可調 10/60/180/300 秒 | 固定 10 秒 |
-| 工位切換 | Notebook 6 個 tab | 下拉式選單（單頁） |
+| 工位切換 | Notebook 6 個 tab | 下拉式選單（單頁）|
 | 接點顏色 | 預設 | 256 色盤自選 |
-| PW3335 電力 | 支援 | **不支援**（題目只要 GX20） |
+| PW3335 電力 | 支援 | **不支援**（題目只要 GX20）|
 | 多瀏覽器同步 | 無 | 透過 SocketIO 自動同步 |
-| 主題 | 兩套（Ocean Deep / Serene Greens） | light / dark（CSS 變數）|
+| 主題 | 兩套（Ocean Deep / Serene Greens）| light / dark（CSS 變數）|
 | 計算效能 | query_recent 全表 | ring buffer（720 筆記憶體）|
 | 大資料繪圖 | matplotlib 自動處理 | LTTB 自動降取樣到 2000 點 |
-| 跨 session 設定 | 不適用 | SQLite 持久 + sessionStorage 分頁暫存 |
+| X 軸範圍 | 不可調 | 主畫面下拉：全部 / 15分 ~ 1天 |
+| CSV 匯出 | 全部 + 10 秒/筆 | **依 X 軸範圍 + 平均整合為 1 分鐘/筆** |
+| 跨 session 設定 | 不適用 | SQLite + JSON 檔 + sessionStorage 三層 |
+| Debug 機制 | print | 結構化 logger + 檔案輪詢 + 動態等級 |
 
 ---
 
-## 3. 系統架構
+## 3. v3 / v4 改版總覽
+
+### v3.0 — Debug logger + 圖表精簡 + 動態 X 軸
+
+- **Debug logger**：log 寫到 `logs/app.log`（RotatingFileHandler，2MB × 5 個備份）
+  - 啟動 / 關閉、poller 每輪結果、HTTP 請求、SocketIO 連線 / 斷線都會入 log
+  - 等級由 `settings` 表的 `debug_log_enabled` 控制（INFO ↔ DEBUG）
+  - 新增 `GET /api/debug`、`POST /api/debug`、`GET /api/debug/log_tail` API
+  - 設定頁有「Debug log」開關（3.7 偵錯區）
+- **圖表精簡**：原本每接點 3 條線（temp/rate/avg）→ 只保留 20 條溫度線
+  - rate / avg 仍由後端推播，前端只用於「最新讀值」表格
+  - 圖例 `display: false`（接點顯示/隱藏全交由設定頁管理）
+  - 移除主畫面頂部 [保存]、圖表標題、左下角說明框
+- **X 軸範圍動態**：`settings.chart_x_minutes`（0 = 全部資料，>0 = 近 N 分鐘）
+  - 主畫面新增 X 軸下拉選單（全部 / 15 / 30 / 1時 / 3時 / 6時 / 12時 / 1天）
+  - Chart.js time scale 動態錨點，每 tick 滑動避免有效區間縮小
+- **CSV 中文檔名 latin-1 修正**：`Content-Disposition` 改 ASCII + `filename*=UTF-8''` 雙路徑
+
+### v4.0 — 最新讀值下拉化 + CSV 平均整合 + 設定檔同步
+
+- **主畫面「最新讀值」下拉化**：
+  - 三個 select 放同一列：X 軸 / 速率 (1~60 分鐘) / 平均 (1~60 分鐘, 3/6 小時)
+  - 表頭「速率 (°C/N 分鐘)」「平均 (°C/N 分鐘)」動態更新
+  - select change → 立即 client 端重畫 + 背景 POST `/api/settings`，下個 tick 套用
+- **CSV 平均整合**：`/api/export_csv/<station>` 拉 raw rows 後依分鐘 bucket 算術平均
+  - 每個 channel 各別平均；全 None → 空字串
+  - 區間預設讀 `chart_x_minutes`（與 X 軸一致），可由 `?since_minutes=N` 覆寫
+  - 檔名加區間標記：`工位5_60min_20260610_154959.csv`
+- **設定檔同步**：`save_settings()` 同步 dump 整包設定到 `config/settings.json`
+  - 啟動時若檔案存在 → 優先採用並寫回 SQLite（避免 DB 預設值誤蓋）
+  - atomic write：`.tmp` + `os.replace`
+
+### 設定頁欄位精簡
+
+- 移除「歷史視窗 (分鐘)」input → 由主畫面 X 軸下拉取代
+- 移除「計算時間長度」整段（升降速率 / 平均 input）→ 由主畫面下拉取代
+- 保留 [保存] 按鈕（主畫面已無此按鈕）
+
+---
+
+## 4. 系統架構
 
 ```
 gx20-web-monitor/
-├── README.md                  本文件
-├── requirements.txt           flask + flask-socketio
-├── run.py                     啟動入口（python run.py）
-├── gx20_reader.py             GX20 TCP 通訊（移植自桌面版）
-├── storage.py                 SQLite 層（schema / insert / query / purge）
-├── config.py                  預設值集中管理
-├── lttb.py                    LTTB 降取樣（後端版）
-├── app.py                     Flask + Flask-SocketIO 主程式
+├── README.md                       本文件
+├── requirements.txt                flask + flask-socketio
+├── run.py                          啟動入口（python run.py）
+├── gx20_reader.py                  GX20 TCP 通訊（移植自桌面版）
+├── storage.py                      SQLite 層（schema / insert / query / purge）
+├── config.py                       預設值集中管理
+├── lttb.py                         LTTB 降取樣（後端版）
+├── app.py                          Flask + Flask-SocketIO 主程式
 ├── data/
-│   └── gx20.db                SQLite 檔（執行時建立，持久保存）
+│   └── gx20.db                     SQLite 檔（執行時建立，持久保存）
+├── config/                         設定同步檔（v4 新增）
+│   └── settings.json               啟動時若存在 → 自動套用
+├── logs/                           Debug logger 輸出（v3 新增）
+│   └── app.log                     RotatingFileHandler（2MB × 5）
 ├── templates/
-│   ├── index.html             監看主頁
-│   └── settings.html          設定頁
+│   ├── index.html                  監看主頁
+│   └── settings.html               設定頁
 └── static/
     ├── css/
-    │   └── style.css          CSS 變數主題系統
+    │   └── style.css               CSS 變數主題系統
     ├── js/
-    │   ├── storage.js         跨分頁 sessionStorage 設定層
-    │   ├── main.js            主頁邏輯
-    │   ├── settings.js        設定頁邏輯
-    │   ├── colorpicker.js     256 色盤
-    │   └── lttb.js            LTTB 降取樣（前端版）
+    │   ├── storage.js              跨分頁 sessionStorage 設定層
+    │   ├── main.js                 主頁邏輯
+    │   ├── settings.js             設定頁邏輯
+    │   ├── colorpicker.js          256 色盤
+    │   └── lttb.js                 LTTB 降取樣（前端版）
     └── vendor/
         ├── chart.umd.min.js
         ├── chartjs-adapter-date-fns.bundle.min.js
@@ -108,7 +166,7 @@ gx20-web-monitor/
 
 ---
 
-## 4. 技術選型
+## 5. 技術選型
 
 | 項目 | 選擇 | 理由 |
 |---|---|---|
@@ -118,14 +176,16 @@ gx20-web-monitor/
 | 資料庫 | **SQLite** + WAL 模式 | 零安裝；單檔；本機使用效能足夠 |
 | 排程 | `threading.Thread` + `time.sleep(10)` | poller daemon thread |
 | 計算降取樣 | **LTTB**（Largest-Triangle-Three-Buckets） | 保留視覺上重要的峰谷，比等距取樣好 |
-| 前端設定暫存 | `sessionStorage`（每分頁獨立） | 同一瀏覽器不同分頁可有不同 UI 狀態 |
+| 設定持久層 | SQLite + `config/settings.json` + `sessionStorage` | 三層：全域 ↔ 跨重啟 ↔ 分頁 UI |
+| Debug log | `logging.handlers.RotatingFileHandler` | 單檔 2MB × 5 個備份，自動輪替 |
+| 前端設定暫存 | `sessionStorage`（每分頁獨立）| 同一瀏覽器不同分頁可有不同 UI 狀態 |
 | 前端 UI | 原生 HTML / CSS / 少量 vanilla JS | 單頁/雙頁，無需框架 |
 | 顏色選擇 | 256 色盤（216 web-safe + 40 灰階） | 題目指定 |
 | 主題 | CSS 變數 + `data-theme` 屬性 | 動態切換不需重整 |
 
 ---
 
-## 5. 資料模型（SQLite Schema）
+## 6. 資料模型（SQLite Schema）
 
 ### `samples` 表（持久化取樣資料）
 
@@ -156,29 +216,32 @@ CREATE TABLE settings (
 );
 ```
 
-預設 / 可能的 key：
+**v3 設定 key 表**（v2 的 `history_minutes` 已移除）：
 
 | key | 類型 | 預設 | 說明 |
 |---|---|---|---|
-| `gx20_host` | str | `192.168.1.1` | GX20 IP |
+| `gx20_host` | str | `<GX20_DEFAULT_HOST>` | GX20 IP |
 | `gx20_port` | int | `34434` | GX20 port |
 | `y_axis_min` | float | `-20` | Y 軸最小值 |
 | `y_axis_max` | float | `100` | Y 軸最大值 |
-| `history_minutes` | int | `60` | 前端首次載入拉多少分鐘 |
-| `rate_window_min` | int | `5` | 升降速率計算區間 |
-| `avg_window_min` | int | `10` | 平均值計算區間 |
+| `rate_window_min` | int | `5` | 升降速率計算區間（主畫面下拉）|
+| `avg_window_min` | int | `10` | 平均值計算區間（主畫面下拉）|
+| `chart_x_minutes` | int | `0` | X 軸範圍（0=全部，>0=近 N 分鐘）|
 | `retention_days` | int | `7` | DB 保留天數（超過自動刪除）|
 | `max_points` | int | `2000` | 圖表最大顯示點數（超過 LTTB 降取樣）|
 | `theme` | str | `light` | `light` 或 `dark` |
+| `debug_log_enabled` | int | `0` | Debug 模式（1=開，0=關）|
 | `ch_visibility` | JSON | 全 true | `{"工位1":[true,...], ...}` 6×20 |
 | `ch_alias` | JSON | `["Ch01",...]` | `{"工位1":["","",...], ...}` 6×20 |
 | `ch_color` | JSON | 20 色預設 | `{"工位1":["#1f77b4",...], ...}` 6×20 |
 
+> 詳細設定流程請見 §8（`config/settings.json` 同步機制）。
+
 ---
 
-## 6. 模組設計
+## 7. 模組設計
 
-### 6.1 `gx20_reader.py`
+### 7.1 `gx20_reader.py`
 
 完全移植自桌面版 `GX20_PW3335.py` 的通訊部分，**協定一字不改**：
 
@@ -191,12 +254,12 @@ CREATE TABLE settings (
 **對外主要介面**：
 
 ```python
-gx = GX20(host="192.168.1.1", port=34434)
+gx = GX20(host="<GX20_DEFAULT_HOST>", port=34434)
 data = gx.get_all_temperatures()
 # → {"工位1": [t1, t2, ..., t20], ..., "工位6": [...]} 或 None（連線失敗）
 ```
 
-### 6.2 `storage.py`
+### 7.2 `storage.py`
 
 ```python
 storage.init_db(reset=False)         # 啟動時呼叫；reset=False 保留既有資料
@@ -211,7 +274,7 @@ storage.get_all_settings() / get_setting() / set_setting()
 
 **WAL 模式**：`PRAGMA journal_mode=WAL` + `synchronous=NORMAL` → 並行讀取不阻塞 poller 寫入。
 
-### 6.3 `lttb.py`（後端 LTTB 降取樣）
+### 7.3 `lttb.py`（後端 LTTB 降取樣）
 
 ```python
 from lttb import lttb_xy, downsample_rows
@@ -225,9 +288,9 @@ rows = downsample_rows(rows, ts_key="ts", point_keys=["t01",...], threshold=2000
 
 演算法概念：把 N 筆切成 `threshold` 桶，每桶挑「與上一選中點 + 下桶平均點構成最大三角形」的那一點。**視覺上能保留峰谷**。
 
-### 6.4 `app.py`（Flask + SocketIO）
+### 7.4 `app.py`（Flask + SocketIO）
 
-詳見 §10 路由表。
+詳見 §12 路由表。
 
 關鍵設計：
 
@@ -235,8 +298,11 @@ rows = downsample_rows(rows, ts_key="ts", point_keys=["t01",...], threshold=2000
 - **ring buffer**：每工位保留最近 720 筆（2hr），rate/avg 直接從記憶體算，不再 query_recent 全表
 - **定期 purge**：poller 每 5 分鐘跑一次 `purge_old_samples(retention_days)`
 - **LTTB on-the-fly**：`/api/history` 回應前若筆數 > `max_points` 自動降取樣
+- **CSV 平均整合**：`/api/export_csv/<station>` 拉 raw rows，依分鐘 bucket 平均輸出
+- **Debug logger**：RotatingFileHandler 寫到 `logs/app.log`；HTTP 請求、SocketIO 事件、poller 每輪結果都會入 log
+- **設定同步**：`save_settings()` 同步 dump 到 `config/settings.json`；`main()` 啟動時若檔案存在則直接採用
 
-### 6.5 `static/js/storage.js`（跨分頁設定層）
+### 7.5 `static/js/storage.js`（跨分頁設定層）
 
 ```
 GX20State.init()     → 拉 server 設定 → 套 session 覆蓋 → 套主題
@@ -246,32 +312,101 @@ GX20State.setTheme(t) → 立即切換主題
 ```
 
 **關鍵**：每個分頁有自己獨立的 `sessionStorage["gx20.tab_state.v1"]`，
-與 SQLite 持久層分離。**切換分頁不會互相覆蓋未保存的變更**。
+與 SQLite / JSON 持久層分離。**切換分頁不會互相覆蓋未保存的變更**。
 
-### 6.6 `static/js/lttb.js`（前端 LTTB）
+### 7.6 `static/js/lttb.js`（前端 LTTB）
 
 `window.lttb(data, threshold)` 對 `{x, y}` 陣列降取樣。當前端 dataset 超過上限時保險用。
 
 ---
 
-## 7. 資料生命週期（v2 改版重點）
+## 8. 設定同步檔 config/settings.json
+
+### 三層架構
+
+```
+┌────────────────────────────────────────────┐
+│ sessionStorage  (per tab, dirty until save) │
+│     ↑ user changes                          │
+│     │ "保存" 按鈕 → POST /api/settings      │
+│     ↓                                        │
+│ SQLite (gx20.db, 全部設定的事實來源)          │
+│     ↑ save_settings()                       │
+│     │ 同步 dump                              │
+│     ↓                                        │
+│ config/settings.json  (重啟時優先採用)        │
+└────────────────────────────────────────────┘
+```
+
+### 啟動流程
+
+```
+main():
+    1. storage.init_db(reset=False)
+    2. 若 config/settings.json 存在:
+         log.info("讀取設定檔 ... 直接套用")
+         apply_json_to_sqlite(json)
+       elif SQLite 為空:
+         寫入預設 + dump 一次 settings.json
+    3. 套用 debug 設定
+    4. 啟動時 purge 過期資料
+    5. 註冊關閉 hooks
+    6. 啟動 poller thread
+    7. socketio.run(...)
+```
+
+### 同步策略
+
+- **寫入側**：`save_settings()` 寫完 SQLite 後，atomic write（`.tmp` + `os.replace`）dump 整包 merge 設定到 `config/settings.json`
+- **讀取側**：`main()` 啟動時若檔案存在 → 直接讀取並寫回 SQLite（後續 `load_settings()` 仍以 SQLite 為主，但內容已被 JSON 覆蓋）
+- **動底欄位**（`ch_visibility` / `ch_alias` / `ch_color`）：以 dict 完整覆寫
+
+### 範例 `config/settings.json`
+
+```json
+{
+  "avg_window_min": 10,
+  "ch_alias": { "工位1": ["Ch01", "Ch02", ...], ... },
+  "ch_color": { "工位1": ["#1f77b4", "#ff7f0e", ...], ... },
+  "ch_visibility": { "工位1": [true, true, ...], ... },
+  "chart_x_minutes": 0,
+  "debug_log_enabled": 0,
+  "gx20_host": "<GX20_DEFAULT_HOST>",
+  "gx20_port": 34434,
+  "max_points": 2000,
+  "rate_window_min": 5,
+  "retention_days": 7,
+  "theme": "light",
+  "y_axis_max": 100,
+  "y_axis_min": -20
+}
+```
+
+> `.gitignore` 已排除 `config/settings.json`（避免 commit 使用者實際設定）。
+> 範例可參考 `config/settings.example.json`。
+
+---
+
+## 9. 資料生命週期
 
 ### 啟動
 
 ```
 1. storage.init_db(reset=False)         ← 補 schema，不刪資料
-2. 若 settings 表為空 → 寫入預設值
-3. storage.purge_old_samples(7)         ← 一次性清掉超過 7 天的舊資料
-4. 註冊 atexit / SIGINT handler（不再 clear_db）
-5. 啟動 poller thread
-6. socketio.run(...)
+2. config/settings.json 優先套用（v4）
+3. 若 SQLite 為空 → 寫入預設值 + dump JSON
+4. storage.purge_old_samples(7)         ← 一次性清掉超過 7 天的舊資料
+5. 註冊 atexit / SIGINT handler（不再 clear_db）
+6. 啟動 poller thread
+7. socketio.run(...)
 ```
 
 ### 執行中
 
-- 每 10 秒：poller 讀 GX20 → 寫 SQLite → 更新 ring buffer → emit
+- 每 10 秒：poller 讀 GX20 → 寫 SQLite → 更新 ring buffer → emit `new_sample`
 - 每 5 分鐘：purge 過期資料
 - DB 持續累積，**關閉程式也不會被清空**
+- 使用者按「保存」→ 同步寫 SQLite + dump JSON
 
 ### 關閉
 
@@ -285,17 +420,20 @@ GX20State.setTheme(t) → 立即切換主題
 
 ---
 
-## 8. 效能與降取樣策略
+## 10. 效能與降取樣策略
 
 ### 瓶頸與對策
 
-| 瓶頸 | v1 問題 | v2 對策 |
+| 瓶頸 | v1 問題 | v3 對策 |
 |---|---|---|
-| 7 天後 DB 巨大（35 MB） | 沒問題，但每次關閉都被清 | 改為持久 + 7 天自動 purge |
+| 7 天後 DB 巨大（35 MB）| 沒問題，但每次關閉都被清 | 改為持久 + 7 天自動 purge |
 | 7 天後 `/api/history` 慢 | query_recent 全表 60k 筆 → 卡 | LTTB 降取樣到 2000 點（45ms）|
 | poller 算 rate/avg 慢 | 每次 query_recent 全表 | ring buffer（720 筆記憶體運算）|
 | 前端 chart 塞 60k 點 | 不可能（v1 沒這麼多資料）| 1) 後端先 LTTB 2) 前端再保險 LTTB |
-| 瀏覽器記憶體爆 | 沒考慮過 | 20 接點 × 3 曲線 × 2000 點 ≈ 120k 物件 / 幾 MB |
+| 瀏覽器記憶體爆 | 沒考慮過 | 20 接點 × 1 曲線 × 2000 點 ≈ 40k 物件 / 幾 MB |
+| CSV 輸出太大 | 全部 10 秒/筆（7 天 60k 筆）| 依 X 軸範圍 + 平均整合為 1 分鐘/筆（最多 1k 筆）|
+| X 軸範圍硬編碼 | 60 分鐘固定 | 下拉 15分 ~ 1天，0=全部 |
+| 故障難排查 | print 在 terminal | 結構化 log 寫檔 + 動態等級 |
 
 ### 測試數據（7 天 60480 筆，單工位）
 
@@ -303,6 +441,7 @@ GX20State.setTheme(t) → 立即切換主題
 |---|---|
 | INSERT 35,210 筆/秒（batch executemany）| 1.7s / 60k 筆 |
 | LTTB 60480 → 2000 | **45ms** |
+| CSV 平均整合 60480 → 1440 桶 | **~30ms** |
 | `query_recent` 7 天 | 1.07s（poller 不再跑這個）|
 | `purge_old_samples` 7 天 | 0.35s |
 
@@ -326,27 +465,29 @@ GX20State.setTheme(t) → 立即切換主題
 
 ---
 
-## 9. 前端 UI 與互動
+## 11. 前端 UI 與互動
 
 ### 主頁 `index.html`
 
 ```
-┌────────────────────────────────────────────────────────────┐
-│ 站點: [工位1 ▼] [設定] [保存] [清除資料] [☀/🌙]  ●已連線  最後更新: 14:32:10 │
-├────────────────────────────────────────────────┬───────────┤
-│  [工位1]                                          │ 最新讀值  │
-│  Chart.js 圖表區                                  │  # 名稱   │
-│  - 溫度分布 (實線, 左軸 °C)                        │  讀值     │
-│  - 升降速率 (虛線, 右軸 °C/min)                     │  速率     │
-│  - 平均值  (點線, 左軸)                             │  平均     │
-│                                                  │           │
-│  Y 軸: 溫度 (auto scale, clamp 在設定範圍)         │           │
-└────────────────────────────────────────────────┴───────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│ 站點: [工位1 ▼] [設定] [儲存 CSV] [...]  ●已連線  最後更新: 14:32 │
+├────────────────────────────────────────┬─────────────────────────┤
+│                                          │ 最新讀值                 │
+│  Chart.js 圖表區                          │ X 軸:[全部 ▼] 速率:[5] 平均:[10]│
+│  - 20 條溫度線（顏色自選）                │  #  名稱   讀值  速率  平均│
+│  - 圖例隱藏（顯示/隱藏在設定頁）           │  1  Ch01   25.0 +0.10  24.9│
+│  - Y 軸: 溫度 (auto scale, clamp)        │  2  Ch02   25.1 +0.05  25.0│
+│  - X 軸: 動態錨點（分鐘滑動）            │  ...                     │
+└────────────────────────────────────────┴─────────────────────────┘
 ```
 
 - **站點下拉選單**：切換時清空 chart、重新拉 history
-- **圖例**：點擊切換曲線顯示（Chart.js 內建）
-- **速率 / 平均曲線**：預設隱藏，點圖例開啟
+- **三個 select 同列**：X 軸 / 速率 / 平均，變更後下個 tick 生效
+  - 速率：1/2/5/10/15/30/60 分鐘
+  - 平均：1/2/5/10/15/30/60 分鐘 / 3 小時 / 6 小時
+  - X 軸：全部 / 15分 / 30分 / 1時 / 3時 / 6時 / 12時 / 1天
+- **表頭動態單位**：「速率 (°C/N 分鐘)」「平均 (°C/N 分鐘)」跟著設定變
 - **右側表格**：4 欄（#、名稱/別名、讀值、速率、平均），依隱藏設定過濾
   - 名稱規則：別名優先，別名為空時顯示頻道號（如 `0005`）
   - 速率含正負號（`+0.123` / `-0.050`）
@@ -355,48 +496,43 @@ GX20State.setTheme(t) → 立即切換主題
 
 ```
 ┌─────────────────────────────────────────┐
-│ GX20 監視 — 設定                  [回監看] [保存] [...]  │
+│ GX20 監視 — 設定        [回監看] [保存] [立即清除 SQLite] [...] │
 ├─────────────────────────────────────────┤
 │ 1. GX20 連線                             │
-│    Host: [192.168.1.1]   Port: [34434]   │
+│    Host: [<GX20_DEFAULT_HOST>]   Port: [34434]   │
 │                                         │
 │ 2. Y 軸範圍                              │
 │    最小值: [-20]  最大值: [100]           │
-│    歷史視窗 (分鐘): [60]                 │
-│                                         │
-│ 3. 計算時間長度                          │
-│    升降速率 (分鐘): [5]                  │
-│    平均值 (分鐘): [10]                   │
+│    ※ 歷史視窗/時間範圍請至主畫面右側...  │
 │                                         │
 │ 3.5 資料保留                             │
 │    DB 保留天數: [7]                      │
 │    圖表最大顯示點數: [2000]              │
 │                                         │
+│ 3.7 偵錯                                │
+│    ☑ 啟用詳細 log（記錄至 logs/app.log）  │
+│                                         │
 │ 4. 接點設定                               │
-│    [工位1] [工位2] [工位3] [工位4] [工位5] [工位6] │
+│    [工位1] [工位2] ... [工位6]            │
 │    ☑ 全部開啟 / 隱藏                    │
-│    ┌──────┬──────┬──────┬──────┬──────┐│
-│    │ #1   │ #2   │ #3   │ #4   │ #5   ││
-│    │ 0001 │ 0002 │ 0003 │ 0004 │ 0005 ││
-│    │ ☑顯示│ ☑顯示│ ☑顯示│ ☑顯示│ ☑顯示││
-│    │ 別名:[____] 別名:[____] ...      ││
-│    │ 顏色:[🟦]  顏色:[🟦]  ...        ││
-│    ├──────┼──────┼──────┼──────┼──────┤│
-│    │ ...20 個接點 ...                   ││
-│    └──────┴──────┴──────┴──────┴──────┘│
+│    ┌──────┬──────┬──────┬──────┐         │
+│    │ #1   │ #2   │ #3   │ #4   │         │
+│    │ ☑顯示│ ☑顯示│ ☑顯示│ ☑顯示│         │
+│    │ 別名:[____] 顏色:[🟦]                 │
+│    └──────┴──────┴──────┴──────┘         │
 └─────────────────────────────────────────┘
 ```
 
 ### 「保存」按鈕行為
 
-- 兩頁頂部都有「保存」按鈕
+- 設定頁頂部有 [保存] 按鈕（主畫面已無此按鈕）
 - 任何欄位改動 → 按鈕變橘色，文字變 `保存 ●`（提示 dirty）
-- 按下保存 → 寫 server + 清 dirty + 同步 sessionStorage 頂層
+- 按下保存 → 寫 server + 清 dirty + 同步 sessionStorage 頂層 + dump JSON
 - **未保存就離開頁面** → 變更只存在本分頁的 sessionStorage，下次進同分頁仍在；進新分頁則消失
 
 ---
 
-## 10. 路由與 API
+## 12. 路由與 API
 
 ### 頁面
 
@@ -411,13 +547,17 @@ GX20State.setTheme(t) → 立即切換主題
 | 路徑 | 方法 | 用途 |
 |---|---|---|
 | `/api/settings` | GET | 讀取全部設定 |
-| `/api/settings` | POST | 寫入設定（merge-write）|
+| `/api/settings` | POST | 寫入設定（merge-write + dump JSON）|
 | `/api/channels` | GET | 6 工位 × 20 接點的 4 碼頻道號 |
-| `/api/history/<station>` | GET | 拉歷史；支援 `?max_points=N` LTTB 降取樣 |
+| `/api/history/<station>` | GET | 拉歷史；支援 `?max_points=N` LTTB 降取樣、`?since_minutes=N` |
 | `/api/latest/<station>` | GET | 該站最新一筆 |
 | `/api/connection` | GET | 連線狀態、host/port |
 | `/api/db_stats` | GET | DB 統計（每工位筆數、總筆數、retention）|
 | `/api/clear` | POST | 手動一鍵清除 SQLite |
+| `/api/export_csv/<station>` | GET | 匯出 CSV；依 X 軸範圍 + 平均整合為 1 分鐘/筆 |
+| `/api/debug` | GET | 讀取 debug 狀態 |
+| `/api/debug` | POST | 切換 debug 狀態（`{"enabled": true/false}`）|
+| `/api/debug/log_tail` | GET | 查 `logs/app.log` 末段（`?lines=N`）|
 
 ### SocketIO 事件
 
@@ -429,26 +569,33 @@ GX20State.setTheme(t) → 立即切換主題
 
 ---
 
-## 11. 設定頁欄位
+## 13. 設定頁欄位
 
 | 區塊 | 欄位 | 預設 | 範圍 | 說明 |
 |---|---|---|---|---|
-| 1. GX20 連線 | Host | `192.168.1.1` | — | GX20 IP |
+| 1. GX20 連線 | Host | `<GX20_DEFAULT_HOST>` | — | GX20 IP |
 | | Port | `34434` | — | TCP port |
 | 2. Y 軸範圍 | 最小值 (°C) | `-20` | 任意 | Y 軸下限（auto scale 不會低於此）|
 | | 最大值 (°C) | `100` | 任意 | Y 軸上限（auto scale 不會高於此）|
-| | 歷史視窗 (分鐘) | `60` | 1~10080 | 前端首次載入拉多少分鐘 |
-| 3. 計算時間長度 | 升降速率 (分鐘) | `5` | 1~60 | 計算升降速率的時間區間 |
-| | 平均值 (分鐘) | `10` | 1~60 | 計算平均值的時間區間 |
 | 3.5 資料保留 | DB 保留天數 | `7` | 1~30 | 超過天數自動刪除（啟動時 + 每 5 分鐘 purge）|
 | | 圖表最大顯示點數 | `2000` | 200~10000 | dataset 超過此值會 LTTB 降取樣 |
+| 3.7 偵錯 | Debug log | `false` | bool | 啟用後 log 寫到 `logs/app.log`（DEBUG 等級）|
 | 4. 接點設定 | 顯示 / 隱藏 | 全顯示 | bool | 隱藏的接點不畫線、不入表格（資料仍存）|
 | | 別名 | `Ch01`~`Ch20` | str | 右側表格與圖例優先顯示別名 |
 | | 顏色 | 20 色預設 | hex | 圖表曲線顏色 + 表格 swatch |
 
+> **v3 移除的欄位**（已由主畫面下拉取代）：
+> - 「2. Y 軸範圍」→「歷史視窗 (分鐘)」
+> - 「3. 計算時間長度」整段（升降速率 / 平均 input）
+>
+> **主畫面下拉的對應設定**（會即時寫回 SQLite + dump JSON）：
+> - `chart_x_minutes` (X 軸)
+> - `rate_window_min` (速率區間)
+> - `avg_window_min` (平均區間)
+
 ---
 
-## 12. 主題系統（light / dark）
+## 14. 主題系統（light / dark）
 
 ### 設計
 
@@ -479,16 +626,16 @@ GX20State.setTheme(t) → 立即切換主題
 
 ---
 
-## 13. 執行方式
+## 15. 執行方式
 
 ### 安裝
 
 ```bash
-cd "D:\gx20-web-monitor"      # 或你的部署路徑
+cd "<your-project-dir>"
 pip install -r requirements.txt
 ```
 
-> **執行設備**（題目指定非原儲存位置）可以放在本機磁碟任意位置，**不必放 OneDrive**。
+> 執行設備（題目指定非原儲存位置）可以放在本機磁碟任意位置，**不必放 OneDrive**。
 > SQLite WAL 模式對單機存取效能最佳。
 
 ### 啟動
@@ -499,6 +646,8 @@ python run.py
 
 - 預設綁 `0.0.0.0:5000`
 - 開瀏覽器：`http://localhost:5000/`（監看） / `http://localhost:5000/settings`（設定）
+- 首次啟動會建立 `config/settings.json` 與 `data/gx20.db`
+- 之後重啟若 `config/settings.json` 存在，**自動套用**（不必按保存）
 
 ### 關閉
 
@@ -508,20 +657,21 @@ python run.py
 
 ### 重啟後行為
 
-- 之前保存的設定（接點、別名、顏色、主題、Host/Port…）都還在
+- 之前保存的設定（接點、別名、顏色、主題、Host/Port、X 軸、速率/平均…）都還在
 - DB 資料保留（最多 7 天，過期自動清）
 - poller 重新開始累積新資料
+- Debug log 模式沿用上次保存的狀態
 
 ### 部署在另一台電腦
 
-1. 整個資料夾複製過去
+1. 整個資料夾複製過去（**不要複製 `config/settings.json`**，讓新機器自己產生）
 2. 安裝 Python 3.10+ 與相依
 3. 啟動
 4. 瀏覽器開 `http://<該機IP>:5000/`
 
 ---
 
-## 14. 故障排除
+## 16. 故障排除
 
 | 症狀 | 可能原因 | 解法 |
 |---|---|---|
@@ -532,19 +682,19 @@ python run.py
 | console 出現 SyntaxError | 瀏覽器 cache 舊 JS | `Ctrl+Shift+R` 或開 DevTools → Network → Disable cache |
 | 設定保存後進設定頁又還原 | 極罕見；sessionStorage 被清 | 確認瀏覽器未開「關閉時清除資料」|
 | DB 異常大 | `retention_days` 設太大 | 調小，或手動按「立即清除 SQLite」|
+| 找不到問題原因 | log 看不到細節 | 設定頁 → 3.7 偵錯 → 開啟 Debug log，查 `logs/app.log` |
+| CSV 匯出空白 | 該工位 / 該 X 軸範圍內無資料 | 確認 DB 內有此工位資料 |
+| 設定值重啟後不見 | `config/settings.json` 被誤刪 | 從備份還原或到設定頁重新保存 |
 
 ### log 位置
 
-啟動時所有 log 印在 terminal（INFO 級別）。要看 poller 細節：
-
-```python
-# app.py 開頭
-logging.basicConfig(level=logging.DEBUG)   # 改 DEBUG 看更詳細
-```
+- 預設 INFO 等級 → 終端 + `logs/app.log`
+- 開啟 Debug log → 設定頁或 `POST /api/debug {"enabled": true}`
+- 查 log 末段：`GET /api/debug/log_tail?lines=100`
 
 ---
 
-## 15. 已知限制
+## 17. 已知限制
 
 - **多進程不安全**：SQLite 不支援多 app 實例同時寫。只能部署 1 份
 - **大量歷史查詢**：雖然有 LTTB，但若 6 工位 × 7 天 × 2000 點同時繪製仍需幾秒
@@ -553,6 +703,7 @@ logging.basicConfig(level=logging.DEBUG)   # 改 DEBUG 看更詳細
 - **256 色盤**：web-safe 近似，未做色弱優化
 - **GX20 單一連線**：本版只支援 1 台 GX20（多台需改 protocol）
 - **即時通訊**：SocketIO broadcast 給所有 client，多瀏覽器開會重複接收（但前端只繪當前站，其他忽略）
+- **CSV 平均**：採算術平均；若該分鐘內有突波，會被稀釋掉（建議搭配原始 DB 查詢做比對）
 
 ---
 
@@ -561,7 +712,7 @@ logging.basicConfig(level=logging.DEBUG)   # 改 DEBUG 看更詳細
 | 項目 | 值 |
 |---|---|
 | 連線 | TCP |
-| 預設 IP / Port | `192.168.1.1:34434` |
+| 預設 IP / Port | `<GX20_DEFAULT_HOST>:34434` |
 | 指令 | `FData,0,0001,1210\r\n` |
 | 頻道範圍 | 0001 ~ 1210（6 工位 × 20 接點）|
 | 回應格式 | 每行 31 char |

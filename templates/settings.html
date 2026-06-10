@@ -45,24 +45,17 @@
       <label>最大值 (°C)</label>
       <input type="number" id="y_axis_max" value="100" step="1">
     </div>
-    <div class="row">
-      <label>歷史視窗 (分鐘)</label>
-      <input type="number" id="history_minutes" value="60" min="1" step="1">
-    </div>
+    <p style="color: var(--text-mute); font-size: 12px; margin: 4px 0 0;">
+      ※ 歷史視窗/時間範圍請至主畫面右側「最新讀值」區塊的 X 軸選單控制。
+    </p>
   </div>
 
-  <!-- ====== 3. 計算時間長度 ====== -->
-  <h2>3. 計算時間長度</h2>
-  <div class="card">
-    <div class="row">
-      <label>升降速率 (分鐘)</label>
-      <input type="number" id="rate_window_min" value="5" min="1" step="1">
-    </div>
-    <div class="row">
-      <label>平均值 (分鐘)</label>
-      <input type="number" id="avg_window_min" value="10" min="1" step="1">
-    </div>
-  </div>
+  <!-- ====== 3. 計算時間長度（v3: 僅保留預設值，主畫面下拉調整）====== -->
+  <!-- v3：升降速率 / 平均的「計算分鐘數」改在主畫面「最新讀值」區塊以 select 選取 -->
+  <!-- 此區原本的兩個 input 已移除，設定頁不再提供（主畫面下拉後即生效） -->
+
+  <!-- ====== 3.6 圖表 X 軸視窗（v3: 改在主畫面控制）====== -->
+  <!-- 此區下放至主畫面「最新讀值」表頭，與升降速率 / 平均選單並列 -->
 
   <!-- ====== 3.5 資料保留 ====== -->
   <h2>3.5 資料保留</h2>
@@ -76,6 +69,18 @@
       <label>圖表最大顯示點數</label>
       <input type="number" id="max_points" value="2000" min="200" max="10000" step="100">
       <span style="color: var(--text-mute); font-size: 12px;">（超過自動 LTTB 降取樣）</span>
+    </div>
+  </div>
+
+  <!-- ====== 3.7 Debug log ====== -->
+  <h2>3.7 偵錯</h2>
+  <div class="card">
+    <div class="row">
+      <label>Debug log</label>
+      <label class="all-toggle-label">
+        <input type="checkbox" id="debugLogEnabled">
+        <span>啟用詳細 log（記錄每輪輪詢、HTTP 請求等至 logs/app.log）</span>
+      </label>
     </div>
   </div>
 

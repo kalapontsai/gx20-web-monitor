@@ -65,9 +65,9 @@
       y_axis_max:    sess.y_axis_max,
       rate_window_min: sess.rate_window_min,
       avg_window_min:  sess.avg_window_min,
-      history_minutes: sess.history_minutes,
       retention_days:  sess.retention_days,
       max_points:      sess.max_points,
+      chart_x_minutes: sess.chart_x_minutes,
       theme:         sess.theme,
     };
     if (saved === null) {
@@ -173,9 +173,9 @@
         y_axis_max:     this.settings.y_axis_max,
         rate_window_min: this.settings.rate_window_min,
         avg_window_min:  this.settings.avg_window_min,
-        history_minutes: this.settings.history_minutes,
         retention_days: this.settings.retention_days,
         max_points: this.settings.max_points,
+        chart_x_minutes: this.settings.chart_x_minutes ?? 0,
         ch_visibility:  this.settings.ch_visibility,
         ch_alias:       this.settings.ch_alias,
         ch_color:       this.settings.ch_color,
@@ -199,9 +199,9 @@
       this.sess.y_axis_max     = payload.y_axis_max;
       this.sess.rate_window_min = payload.rate_window_min;
       this.sess.avg_window_min  = payload.avg_window_min;
-      this.sess.history_minutes = payload.history_minutes;
       this.sess.retention_days  = payload.retention_days;
       this.sess.max_points      = payload.max_points;
+      this.sess.chart_x_minutes = payload.chart_x_minutes;
       this.sess.theme          = payload.theme;
       // 記下「已保存的快照」供 dirty 比較
       this.sess._saved = {
@@ -214,9 +214,9 @@
         y_axis_max:    payload.y_axis_max,
         rate_window_min: payload.rate_window_min,
         avg_window_min:  payload.avg_window_min,
-        history_minutes: payload.history_minutes,
         retention_days:  payload.retention_days,
         max_points:      payload.max_points,
+        chart_x_minutes: payload.chart_x_minutes,
         theme:         payload.theme,
       };
       sessionStorage.setItem(SESSION_KEY, JSON.stringify(this.sess));

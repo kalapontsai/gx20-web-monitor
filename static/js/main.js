@@ -1,14 +1,16 @@
 // main.js — 監看主頁邏輯
 //
-// 設定流程（見 storage.js）：
-//   - GX20State.init() 從 server 拉 baseline，再用 sessionStorage 覆蓋
-//   - 主頁完全以 sessionStorage 為主；不再跟 server 即時同步
-//   - 任何設定改動 → 寫 sessionStorage，dirty 標記
-//   - 頂部「保存」按鈕 → POST 到 server
-//
-// 標題格式：'[工位1]'
-// 圖表：Chart.js（y 軸=溫度, y1 軸=速率）
+// 圖表：Chart.js（y 軸=溫度；右側 legend 隱藏，由設定頁管理接點顯示/隱藏）
 // 即時：Socket.IO
+//
+// v3 變更：
+//   - 主畫面不再有「保存」按鈕（設定頁才有）
+//   - 主畫面不再顯示圖表標題、左下角說明框
+//   - 圖表只顯示 20 條溫度線（移除 rate/avg 兩種 dataset）
+//   - rate / avg 由後端推播，前端只用於「最新讀值」表格
+//   - X 軸範圍 / 速率區間 / 平均區間 → 主畫面「最新讀值」區塊三個 select
+//     變更後立即 POST /api/settings（單一 key patch），下一輪推播即生效
+//   - 「最新讀值」表頭速率/平均的單位會跟著 select 改變
 
 const POINTS = 20;
 let currentStation = null;
@@ -32,6 +34,9 @@ async function init() {
 
   await loadChannelNums();
 
+  // 主畫面三個 select 初始化
+  initReadoutControls(settings);
+
   sel.addEventListener("change", () => {
     currentStation = sel.value;
     saveSessionExtra({ currentStation });
@@ -48,20 +53,14 @@ async function init() {
     updateReadoutTable(null);
   });
 
-  document.getElementById("saveBtn").addEventListener("click", async () => {
-    try {
-      await GX20State.save();
-      alert("已保存");
-    } catch (e) {
-      alert("保存失敗: " + e.message);
-    }
-  });
-
   // 主題切換
   document.getElementById("themeBtn").addEventListener("click", () => {
     const next = GX20State.theme === "dark" ? "light" : "dark";
     GX20State.setTheme(next);
   });
+
+  // 儲存 CSV（以視窗對話框選路徑）
+  document.getElementById("exportCsvBtn").addEventListener("click", exportCurrentStationAsCsv);
 
   // SocketIO
   const socket = io();
@@ -121,6 +120,97 @@ async function refreshConnStatus() {
   }
 }
 
+// ---------- 主畫面右側 select 控制項 ----------
+
+/**
+ * 把分鐘數轉成 "X分鐘" / "X小時" / "X天" 顯示字串（用於 select option label）。
+ */
+function _fmtMinLabel(min) {
+  const n = Number(min);
+  if (n === 0) return "全部";
+  if (n < 60)  return `${n} 分鐘`;
+  if (n % 60 === 0) {
+    const h = n / 60;
+    return h === 1 ? "1 小時" : `${h} 小時`;
+  }
+  // 非整數小時，回退顯示分鐘
+  return `${n} 分鐘`;
+}
+
+/**
+ * 動態設定表頭文字（速率/平均欄位）。
+ */
+function refreshRateAvgHeaders() {
+  const rate = Number(GX20State.settings.rate_window_min) || 5;
+  const avg  = Number(GX20State.settings.avg_window_min)  || 10;
+  const rateTxt = `速率 (°C/${_fmtMinLabel(rate)})`;
+  const avgTxt  = `平均 (°C/${_fmtMinLabel(avg)})`;
+  document.getElementById("rateTh").textContent = rateTxt;
+  document.getElementById("avgTh").textContent  = avgTxt;
+}
+
+/**
+ * 把 select option 的 value 套用「目前」的值。
+ * 並比對 option 是否存在；若不在預設清單內，動態加上一個 "N 分鐘"。
+ */
+function _setSelectValue(sel, value, allowed) {
+  const v = String(value);
+  if ([...sel.options].some(o => o.value === v)) {
+    sel.value = v;
+    return;
+  }
+  // 動態新增 option（使用者從設定頁/外部改了非預設值）
+  const opt = document.createElement("option");
+  opt.value = v;
+  opt.textContent = _fmtMinLabel(Number(v));
+  sel.appendChild(opt);
+  sel.value = v;
+}
+
+function initReadoutControls(settings) {
+  const xSel   = document.getElementById("chartXSel");
+  const rateSel = document.getElementById("rateSel");
+  const avgSel  = document.getElementById("avgSel");
+
+  _setSelectValue(xSel,   settings.chart_x_minutes ?? 0);
+  _setSelectValue(rateSel, settings.rate_window_min ?? 5);
+  _setSelectValue(avgSel,  settings.avg_window_min  ?? 10);
+
+  refreshRateAvgHeaders();
+
+  xSel.addEventListener("change",   () => patchSettingAndApply("chart_x_minutes", parseInt(xSel.value, 10) || 0, "x"));
+  rateSel.addEventListener("change", () => patchSettingAndApply("rate_window_min", parseInt(rateSel.value, 10) || 5, "rate"));
+  avgSel.addEventListener("change",  () => patchSettingAndApply("avg_window_min",  parseInt(avgSel.value, 10) || 10, "avg"));
+}
+
+/**
+ * 變更設定 → 立即 POST /api/settings（單 key patch）→ 更新 GX20State → 重畫
+ * 「下一個 tick」生效：後端 poller 下一次 emit new_sample 會帶新值
+ * 但 X 軸要立即套用（影響 chart 範圍），所以 client 端也同步更新。
+ */
+async function patchSettingAndApply(key, value, which) {
+  // 1) 寫 GX20State（同步 UI）
+  GX20State.update(key, value);
+
+  // 2) 立即套用到 client（X 軸 / 表頭）
+  if (which === "x") {
+    rebuildChart();
+  } else if (which === "rate" || which === "avg") {
+    refreshRateAvgHeaders();
+  }
+
+  // 3) 背景 POST 到 server（不需要等回應，poller 下輪會重讀）
+  try {
+    await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ [key]: value }),
+    });
+  } catch (e) {
+    console.warn("patchSetting 失敗", key, value, e);
+  }
+}
+
 // ---------- Chart ----------
 
 // 圖表軸 / 格線 / 文字色，根據當前主題切換
@@ -155,40 +245,29 @@ function buildChart() {
       yAxisID: "y",
       hidden: false,
       pointIndex: i,
-      kind: "temp",
-    });
-    datasets.push({
-      label: `${alias} 速率`,
-      data: [],
-      borderColor: color,
-      backgroundColor: color,
-      borderWidth: 1,
-      borderDash: [6, 4],
-      pointRadius: 0,
-      tension: 0.15,
-      yAxisID: "y1",
-      hidden: true,
-      pointIndex: i,
-      kind: "rate",
-    });
-    datasets.push({
-      label: `${alias} 平均`,
-      data: [],
-      borderColor: color,
-      backgroundColor: color,
-      borderWidth: 1,
-      borderDash: [2, 3],
-      pointRadius: 0,
-      tension: 0,
-      yAxisID: "y",
-      hidden: true,
-      pointIndex: i,
-      kind: "avg",
     });
   }
 
   if (chart) chart.destroy();
   const c = chartColors();
+  const yMin = parseFloat(settings.y_axis_min);
+  const yMax = parseFloat(settings.y_axis_max);
+  const xMin = Number(settings.chart_x_minutes) || 0;
+
+  const xScale = {
+    type: "time",
+    time: {
+      tooltipFormat: "yyyy-MM-dd HH:mm:ss",
+      displayFormats: { minute: "HH:mm", hour: "MM-dd HH:mm", day: "MM-dd" },
+    },
+    ticks: { color: c.text, maxRotation: 0, autoSkipPadding: 20 },
+    grid:  { color: c.grid },
+  };
+  if (xMin > 0) {
+    // 動態 X 軸：每次 build 都以「現在」為錨點
+    xScale.min = Date.now() - xMin * 60 * 1000;
+  }
+
   chart = new Chart(ctx, {
     type: "line",
     data: { datasets },
@@ -199,36 +278,24 @@ function buildChart() {
       parsing: false,
       interaction: { mode: "nearest", intersect: false },
       plugins: {
-        legend: { display: true, position: "right", labels: { color: c.text, boxWidth: 10, font: { size: 10 } } },
+        // v3：隱藏接點 legend（顯示/隱藏統一在設定頁管理）
+        legend: { display: false },
         tooltip: { callbacks: { label: (ctx) => `${ctx.dataset.label}: ${ctx.parsed.y}` } },
       },
       scales: {
-        x: {
-          type: "time",
-          time: { tooltipFormat: "yyyy-MM-dd HH:mm:ss", displayFormats: { minute: "HH:mm", hour: "MM-dd HH:mm" } },
-          ticks: { color: c.text, maxRotation: 0, autoSkipPadding: 20 },
-          grid:  { color: c.grid },
-        },
+        x: xScale,
         y: {
           type: "linear",
           position: "left",
           ticks: { color: c.text },
           grid:  { color: c.grid },
           title: { display: true, text: "溫度 (°C)", color: c.text },
-        },
-        y1: {
-          type: "linear",
-          position: "right",
-          ticks: { color: c.text },
-          grid: { drawOnChartArea: false },
-          title: { display: true, text: "速率 (°C/min)", color: c.text },
+          ...(Number.isFinite(yMin) ? { min: yMin } : {}),
+          ...(Number.isFinite(yMax) ? { max: yMax } : {}),
         },
       },
     },
   });
-
-  const titleEl = document.getElementById("chartTitle");
-  if (titleEl) titleEl.textContent = `[${currentStation}]`;
 }
 
 function rebuildChart() { buildChart(); }
@@ -249,7 +316,12 @@ _obs.observe(document.body, { attributes: true, attributeFilter: ["data-theme"] 
 async function loadHistory() {
   try {
     const maxPoints = (GX20State.settings && GX20State.settings.max_points) || DATASET_MAX_POINTS;
-    const url = `/api/history/${encodeURIComponent(currentStation)}?max_points=${maxPoints}`;
+    const xMin = Number(GX20State.settings.chart_x_minutes) || 0;
+    const params = new URLSearchParams();
+    params.set("max_points", String(maxPoints));
+    if (xMin > 0) params.set("since_minutes", String(xMin));
+    // xMin=0 不帶 since_minutes → server 拉全部
+    const url = `/api/history/${encodeURIComponent(currentStation)}?${params.toString()}`;
     const r = await fetch(url);
     const j = await r.json();
     if (!j.ok) return;
@@ -259,11 +331,9 @@ async function loadHistory() {
         const idx = ds.pointIndex;
         const v = row[`t${String(idx+1).padStart(2, "0")}`];
         if (v === null || v === undefined) continue;
-        if (ds.kind === "temp") ds.data.push({ x: ts, y: v });
+        ds.data.push({ x: ts, y: v });
       }
     }
-    // 伺服器已降取樣到 max_points；但多個 datasets 共用同一 rows，
-    // 若使用者只顯示部分接點，個別 dataset 不會超限，無需前端再降取樣
     chart.update("none");
   } catch (e) {
     console.error("loadHistory:", e);
@@ -277,18 +347,12 @@ function onNewSample(payload) {
   const ts = new Date(payload.ts).getTime();
   for (const ds of chart.data.datasets) {
     const idx = ds.pointIndex;
-    if (ds.kind === "temp") {
-      const v = payload.temps[idx];
-      if (v !== null && v !== undefined) ds.data.push({ x: ts, y: v });
-    } else if (ds.kind === "rate") {
-      const v = payload.rate[idx];
-      if (v !== null && v !== undefined) ds.data.push({ x: ts, y: v });
-    } else if (ds.kind === "avg") {
-      const v = payload.avg[idx];
-      if (v !== null && v !== undefined) ds.data.push({ x: ts, y: v });
-    }
+    const v = payload.temps[idx];
+    if (v !== null && v !== undefined) ds.data.push({ x: ts, y: v });
   }
   pruneOldData();
+  // X 軸動態：select 是分鐘錨點，隨時間流逝錨點也要跟著滑動
+  slideXWindow();
   chart.update("none");
   document.getElementById("lastTs").textContent = `最後更新: ${payload.ts}`;
   updateReadoutTable(payload);
@@ -298,22 +362,41 @@ function onNewSample(payload) {
 const DATASET_MAX_POINTS = 2000;
 
 function pruneOldData() {
-  // 雙重保護：
-  // 1) 先以時間窗裁掉 X 軸外的舊點（避免越來越長）
-  // 2) 若仍有 dataset 超過 DATASET_MAX_POINTS，做 LTTB 降取樣
-  const winMs = (GX20State.settings.history_minutes || 60) * 60 * 1000;
-  const cutoff = Date.now() - winMs;
-  for (const ds of chart.data.datasets) {
-    // 時間軸裁剪
-    while (ds.data.length && ds.data[0].x < cutoff) ds.data.shift();
-    // 點數上限保護
-    if (ds.data.length > DATASET_MAX_POINTS) {
-      ds.data = window.lttb(ds.data, DATASET_MAX_POINTS);
+  // X 軸是動態錨點：每次 new_sample 都以「現在」往前 N 分鐘剪掉舊點
+  const xMin = Number(GX20State.settings.chart_x_minutes) || 0;
+  if (xMin > 0) {
+    const cutoff = Date.now() - xMin * 60 * 1000;
+    for (const ds of chart.data.datasets) {
+      while (ds.data.length && ds.data[0].x < cutoff) ds.data.shift();
+      if (ds.data.length > DATASET_MAX_POINTS) {
+        ds.data = window.lttb(ds.data, DATASET_MAX_POINTS);
+      }
+    }
+  } else {
+    // 全部資料模式：只做點數上限保護
+    for (const ds of chart.data.datasets) {
+      if (ds.data.length > DATASET_MAX_POINTS) {
+        ds.data = window.lttb(ds.data, DATASET_MAX_POINTS);
+      }
     }
   }
 }
 
-// ---------- 右側表格（四個欄位：名稱、讀值、速率、平均） ----------
+/**
+ * X 軸動態錨點：select 是分鐘數，錨點是「now - N*60s」。
+ * 隨著時間流逝，必須把錨點跟著往右滑，否則使用者看到的有效區間會一直縮小。
+ * Chart.js time scale 預設不會自動 slide min，這裡手動更新。
+ */
+function slideXWindow() {
+  const xMin = Number(GX20State.settings.chart_x_minutes) || 0;
+  if (xMin <= 0 || !chart) return;
+  const newMin = Date.now() - xMin * 60 * 1000;
+  if (chart.options.scales.x.min !== newMin) {
+    chart.options.scales.x.min = newMin;
+  }
+}
+
+// ---------- 右側表格（名稱、讀值、速率、平均） ----------
 // 名稱規則：別名優先，別名為空時顯示頻道號
 
 function updateReadoutTable(payload) {
@@ -325,7 +408,7 @@ function updateReadoutTable(payload) {
     if (!settings.ch_visibility[currentStation][i]) continue;
     const alias = (settings.ch_alias[currentStation][i] || "").trim();
     const fallback = channelNums[currentStation]?.[i] || `Ch${i+1}`;
-    const name = alias || fallback;   // 別名優先
+    const name = alias || fallback;
     const color = settings.ch_color[currentStation][i];
     const v = payload.temps[i];
     const r = payload.rate ? payload.rate[i] : null;
@@ -359,6 +442,78 @@ function fmtRate(v) {
   if (v === null || v === undefined || Number.isNaN(v)) return "—";
   const s = Number(v).toFixed(3);
   return Number(v) > 0 ? "+" + s : s;
+}
+
+// ---------- 儲存 CSV ----------
+// 優先使用 showSaveFilePicker（Chrome/Edge，可選資料夾與檔名）
+// 不支援則 fallback 到傳統 <a download>（也會跳儲存對話框）
+
+function pad2(n) { return String(n).padStart(2, "0"); }
+
+function defaultFilename(xMin) {
+  const d = new Date();
+  const ts = `${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}_` +
+             `${pad2(d.getHours())}${pad2(d.getMinutes())}${pad2(d.getSeconds())}`;
+  const range = xMin > 0 ? `_${xMin}min` : "_all";
+  return `${currentStation}${range}_${ts}.csv`;
+}
+
+async function exportCurrentStationAsCsv() {
+  const btn = document.getElementById("exportCsvBtn");
+  btn.disabled = true;
+  const oldText = btn.textContent;
+  btn.textContent = "儲存中…";
+  try {
+    // 以主畫面 X 軸長度作為匯出區間
+    // 0 = 全部；>0 = 近 N 分鐘
+    const xMin = Number(GX20State.settings.chart_x_minutes) || 0;
+    const params = new URLSearchParams();
+    if (xMin > 0) params.set("since_minutes", String(xMin));
+    const qs = params.toString();
+    const url = `/api/export_csv/${encodeURIComponent(currentStation)}${qs ? "?" + qs : ""}`;
+    const r = await fetch(url);
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}));
+      alert("儲存失敗：" + (j.error || r.statusText));
+      return;
+    }
+    const csvText = await r.text();
+    const suggestedName = defaultFilename(xMin);
+
+    if (window.showSaveFilePicker) {
+      // Chrome/Edge 的 File System Access API
+      try {
+        const handle = await window.showSaveFilePicker({
+          suggestedName,
+          types: [{
+            description: "CSV 檔案",
+            accept: { "text/csv": [".csv"] },
+          }],
+        });
+        const writable = await handle.createWritable();
+        await writable.write(csvText);
+        await writable.close();
+        return;
+      } catch (e) {
+        if (e && e.name === "AbortError") return;  // 使用者取消
+        console.warn("showSaveFilePicker 失敗，改用傳統下載:", e);
+      }
+    }
+
+    // Fallback：建立隱形 <a download>
+    const blob = new Blob(["\ufeff" + csvText.replace(/^\ufeff/, "")], { type: "text/csv;charset=utf-8" });
+    const dlUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = dlUrl;
+    a.download = suggestedName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(dlUrl), 1000);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = oldText;
+  }
 }
 
 window.addEventListener("DOMContentLoaded", init);

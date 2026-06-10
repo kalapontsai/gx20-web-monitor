@@ -1,0 +1,16 @@
+{
+  "avg_window_min": 10,
+  "chart_x_minutes": 0,
+  "debug_log_enabled": 0,
+  "gx20_host": "192.168.1.1",
+  "gx20_port": 34434,
+  "max_points": 2000,
+  "rate_window_min": 5,
+  "retention_days": 7,
+  "theme": "light",
+  "y_axis_max": 100,
+  "y_axis_min": -20,
+  "ch_alias": "{\"工位1\": [\"Ch01\", \"Ch02\", ...], ...}",
+  "ch_color": "{\"工位1\": [\"#1f77b4\", \"#ff7f0e\", ...], ...}",
+  "ch_visibility": "{\"工位1\": [true, true, ...], ...}"
+}

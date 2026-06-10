@@ -38,22 +38,47 @@ async function init() {
   document.getElementById("gx20_port").value        = settings.gx20_port;
   document.getElementById("y_axis_min").value       = settings.y_axis_min;
   document.getElementById("y_axis_max").value       = settings.y_axis_max;
-  document.getElementById("rate_window_min").value  = settings.rate_window_min;
-  document.getElementById("avg_window_min").value   = settings.avg_window_min;
-  document.getElementById("history_minutes").value  = settings.history_minutes;
   document.getElementById("retention_days").value   = settings.retention_days;
   document.getElementById("max_points").value       = settings.max_points;
+
+  // 從 server 額外拉 debug flag（GX20State 不會自動合併，獨立處理）
+  try {
+    const r = await fetch("/api/debug");
+    const j = await r.json();
+    if (j.ok) {
+      document.getElementById("debugLogEnabled").checked = !!j.enabled;
+    }
+  } catch {}
 
   // 基本欄位 → GX20State.update
   bindField("gx20_host",       (v) => GX20State.update("gx20_host", v));
   bindField("gx20_port",       (v) => GX20State.update("gx20_port", parseInt(v, 10) || 0));
   bindField("y_axis_min",      (v) => GX20State.update("y_axis_min", parseFloat(v) || 0));
   bindField("y_axis_max",      (v) => GX20State.update("y_axis_max", parseFloat(v) || 0));
-  bindField("rate_window_min", (v) => GX20State.update("rate_window_min", parseInt(v, 10) || 1));
-  bindField("avg_window_min",  (v) => GX20State.update("avg_window_min", parseInt(v, 10) || 1));
-  bindField("history_minutes", (v) => GX20State.update("history_minutes", parseInt(v, 10) || 1));
   bindField("retention_days",  (v) => GX20State.update("retention_days", Math.max(1, Math.min(30, parseInt(v, 10) || 7))));
   bindField("max_points",      (v) => GX20State.update("max_points", Math.max(200, Math.min(10000, parseInt(v, 10) || 2000))));
+
+  // Debug log 切換 → 直接 POST /api/debug（不透過 GX20State）
+  document.getElementById("debugLogEnabled").addEventListener("change", async (e) => {
+    const want = e.target.checked;
+    try {
+      const r = await fetch("/api/debug", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: want }),
+      });
+      const j = await r.json();
+      if (j.ok) {
+        alert(want ? "Debug log 已開啟（記錄至 logs/app.log）" : "Debug log 已關閉");
+      } else {
+        alert("切換失敗: " + (j.error || ""));
+        e.target.checked = !want;
+      }
+    } catch (err) {
+      alert("切換失敗: " + err.message);
+      e.target.checked = !want;
+    }
+  });
 
   // 站點 tab
   const tabs = document.getElementById("stationTabs");
