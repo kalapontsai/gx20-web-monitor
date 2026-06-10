@@ -2,16 +2,31 @@
 """
 storage.py
 ==========
-SQLite 儲存層。
+SQLite 儲存層（v5 多工位獨立 DB 版）。
 
-策略:
-  - 資料持久：關閉程式不會自動刪 DB；超過「保留天數」才清除
-  - 啟動時只補缺的 table / index；不刪舊資料
-  - 由設定頁「立即清除 SQLite」按鈕或後端定期清理過期資料
-  - schema 見模組 docstring
+佈局：
+  data/
+  ├── gx20_<station>.db    # 各工位一份 samples 表
+  ├── gx20_settings.db     # 6 工位共用的 settings 表
+  └── archive/
+      └── gx20_<station>_<YYYYMMDD_HHMMSS>.db   # 清除前歸檔
+
+設計理由：
+  - 6 工位非同步上下線 → 各自獨立 DB 互不污染
+  - 清特定工位時先歸檔 → 救得回來
+  - 設定與資料分離 → 清資料不會洗掉 GX20 連線、別名、顏色
+
+向後相容：
+  - 啟動時若偵測到舊的 data/gx20.db，自動 migrate：
+      1) samples 按 station 切到 6 個新 DB
+      2) settings 全部複製到 gx20_settings.db
+      3) 舊檔刪除（先歸檔到 archive/gx20_pre_migration_<時間>.db）
 """
 
+import glob
 import os
+import re
+import shutil
 import sqlite3
 import logging
 from contextlib import contextmanager
@@ -20,8 +35,18 @@ from datetime import datetime, timedelta
 
 log = logging.getLogger("storage")
 
+# 延遲載入：避免 storage.py 被 import 時 gx20_reader 還沒初始化
+_STATIONS: Optional[List[str]] = None
+
 DB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
-DB_PATH = os.path.join(DB_DIR, "gx20.db")
+ARCHIVE_DIR = os.path.join(DB_DIR, "archive")
+
+# 每工位歸檔保留份數（超過自動刪最舊）
+ARCHIVE_KEEP_PER_STATION = 5
+
+# 舊版單一 DB 檔名（用於 migrate 偵測）
+LEGACY_DB_NAME = "gx20.db"
+LEGACY_SETTINGS_DB_NAME = "gx20_settings.db"  # migrate 完後 settings 用這個檔名
 
 # === schema ===
 SAMPLE_T_COLS = ", ".join(f"t{i:02d} REAL" for i in range(1, 21))
@@ -33,16 +58,46 @@ SCHEMA_SAMPLES = (
     f" {SAMPLE_T_COLS}"
     ")"
 )
+SCHEMA_SETTINGS = (
+    "CREATE TABLE IF NOT EXISTS settings ("
+    " key TEXT PRIMARY KEY,"
+    " value TEXT"
+    ")"
+)
 
 
-def _ensure_data_dir() -> None:
+def _stations() -> List[str]:
+    """惰性載入 STATIONS 列表。"""
+    global _STATIONS
+    if _STATIONS is None:
+        from gx20_reader import STATIONS  # 避免循環 import
+        _STATIONS = list(STATIONS)
+    return _STATIONS
+
+
+# === 路徑 helper ===
+
+def samples_db_path(station: str) -> str:
+    return os.path.join(DB_DIR, f"gx20_{station}.db")
+
+
+def settings_db_path() -> str:
+    return os.path.join(DB_DIR, LEGACY_SETTINGS_DB_NAME)
+
+
+def _ensure_dirs() -> None:
     os.makedirs(DB_DIR, exist_ok=True)
+    os.makedirs(ARCHIVE_DIR, exist_ok=True)
 
+
+# === connection helper ===
 
 @contextmanager
-def _conn() -> Iterator[sqlite3.Connection]:
-    _ensure_data_dir()
-    c = sqlite3.connect(DB_PATH, timeout=5, isolation_level=None)
+def _conn_samples(station: str) -> Iterator[sqlite3.Connection]:
+    """特定工位的 samples DB 連線。"""
+    path = samples_db_path(station)
+    _ensure_dirs()
+    c = sqlite3.connect(path, timeout=5, isolation_level=None)
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA journal_mode=WAL")
     c.execute("PRAGMA synchronous=NORMAL")
@@ -52,98 +107,325 @@ def _conn() -> Iterator[sqlite3.Connection]:
         c.close()
 
 
+@contextmanager
+def _conn_settings() -> Iterator[sqlite3.Connection]:
+    """共用 settings DB 連線。"""
+    _ensure_dirs()
+    c = sqlite3.connect(settings_db_path(), timeout=5, isolation_level=None)
+    c.row_factory = sqlite3.Row
+    c.execute("PRAGMA journal_mode=WAL")
+    c.execute("PRAGMA synchronous=NORMAL")
+    try:
+        yield c
+    finally:
+        c.close()
+
+
+# === init / migrate ===
+
 def init_db(reset: bool = False) -> None:
-    """建立資料表（若檔案已存在則保留資料）。
-    reset=True 時會刪除舊 DB。
-    過期資料清除由 purge_old_samples() 負責。"""
-    _ensure_data_dir()
-    if reset and os.path.exists(DB_PATH):
-        log.info("init_db: reset=True，刪除舊的 %s", DB_PATH)
-        os.remove(DB_PATH)
-    with _conn() as c:
-        c.execute(SCHEMA_SAMPLES)
-        c.execute("CREATE INDEX IF NOT EXISTS idx_samples_station_ts ON samples(station, ts)")
-        c.execute(
-            "CREATE TABLE IF NOT EXISTS settings ("
-            " key TEXT PRIMARY KEY,"
-            " value TEXT"
-            ")"
-        )
-    log.info("init_db: schema 就緒 (%s)", DB_PATH)
+    """
+    啟動時呼叫。
+    1) 若有舊 data/gx20.db → migrate
+    2) 為每工位建立 samples DB（補 schema）
+    3) 為 settings DB 補 schema
+    """
+    _ensure_dirs()
+    _migrate_legacy_if_needed()
+
+    if reset:
+        log.warning("init_db: reset=True，刪除所有 data/gx20_*.db 與 settings db")
+        for s in _stations():
+            p = samples_db_path(s)
+            if os.path.exists(p):
+                os.remove(p)
+        if os.path.exists(settings_db_path()):
+            os.remove(settings_db_path())
+
+    # 為每工位建 schema（CREATE IF NOT EXISTS，不刪資料）
+    for s in _stations():
+        with _conn_samples(s) as c:
+            c.execute(SCHEMA_SAMPLES)
+            c.execute("CREATE INDEX IF NOT EXISTS idx_samples_ts ON samples(ts)")
+    # settings
+    with _conn_settings() as c:
+        c.execute(SCHEMA_SETTINGS)
+    log.info("init_db: 6 工位 samples DB + settings DB 就緒 (dir=%s)", DB_DIR)
 
 
-def purge_old_samples(retention_days: int) -> int:
-    """刪除超過保留天數的資料。回傳刪除筆數。"""
-    if retention_days <= 0:
-        return 0
-    cutoff = (datetime.now() - timedelta(days=retention_days)).isoformat(timespec="seconds")
-    with _conn() as c:
-        cur = c.execute("DELETE FROM samples WHERE ts < ?", (cutoff,))
-        deleted = cur.rowcount or 0
-    if deleted:
-        log.info("purge_old_samples: 刪除 %d 筆（保留 %d 天）", deleted, retention_days)
-    return deleted
+def _migrate_legacy_if_needed() -> None:
+    """若偵測到舊 data/gx20.db，把 samples 按 station 切到新 DB，settings 移到新 settings DB。"""
+    legacy = os.path.join(DB_DIR, LEGACY_DB_NAME)
+    if not os.path.exists(legacy):
+        return
 
+    log.info("偵測到舊 DB %s，開始 migrate 到 6 獨立 DB 佈局", legacy)
+    ts_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+    archive_path = os.path.join(ARCHIVE_DIR, f"gx20_pre_migration_{ts_str}.db")
 
-def clear_db() -> None:
-    """刪除整個 SQLite 檔（對應「關閉網頁清除資料」）。"""
-    if os.path.exists(DB_PATH):
+    # 1) 先把舊檔整份歸檔（含 settings + samples）
+    try:
+        shutil.copy2(legacy, archive_path)
+        log.info("migrate: 舊 DB 已歸檔到 %s", archive_path)
+    except Exception as e:
+        log.warning("migrate: 歸檔舊 DB 失敗: %s（繼續 migrate）", e)
+
+    # 2) 連舊 DB 拉資料
+    try:
+        c = sqlite3.connect(legacy, timeout=5)
+        c.row_factory = sqlite3.Row
+        # 2a) samples 按 station 切到新 DB
+        rows = c.execute("SELECT * FROM samples ORDER BY id ASC").fetchall()
+        grouped: Dict[str, List[sqlite3.Row]] = {}
+        for r in rows:
+            grouped.setdefault(r["station"], []).append(r)
+        for station, srows in grouped.items():
+            # 若 station 不在 _stations() 內（理論不會），仍建檔
+            with _conn_samples(station) as nc:
+                nc.execute(SCHEMA_SAMPLES)
+                nc.execute("CREATE INDEX IF NOT EXISTS idx_samples_ts ON samples(ts)")
+                cols = "ts, station, " + ", ".join(f"t{i:02d}" for i in range(1, 21))
+                placeholders = "?, ?, " + ", ".join("?" for _ in range(20))
+                sql = f"INSERT INTO samples ({cols}) VALUES ({placeholders})"
+                for r in srows:
+                    vals = [r["ts"], r["station"]] + [r[f"t{i:02d}"] for i in range(1, 21)]
+                    nc.execute(sql, vals)
+            log.info("migrate: %s 寫入 %d 筆", station, len(srows))
+
+        # 2b) settings 移到新 settings DB
         try:
-            os.remove(DB_PATH)
-            log.info("clear_db: 已刪除 %s", DB_PATH)
-        except OSError as e:
-            log.error("clear_db 失敗: %s", e)
+            srows = c.execute("SELECT key, value FROM settings").fetchall()
+            with _conn_settings() as nc:
+                nc.execute(SCHEMA_SETTINGS)
+                for r in srows:
+                    nc.execute(
+                        "INSERT INTO settings(key, value) VALUES(?, ?) "
+                        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                        (r["key"], r["value"]),
+                    )
+            log.info("migrate: settings 寫入 %d 筆", len(srows))
+        except sqlite3.OperationalError:
+            # 舊 DB 沒有 settings 表（v1 之前），略過
+            log.info("migrate: 舊 DB 無 settings 表，略過")
 
+        c.close()
+    except Exception as e:
+        log.exception("migrate 過程失敗: %s", e)
+        return
+
+    # 3) 刪除舊檔（含 WAL/SHM）
+    for ext in ("", "-wal", "-shm", "-journal"):
+        p = legacy + ext
+        if os.path.exists(p):
+            try:
+                os.remove(p)
+            except OSError as e:
+                log.warning("migrate: 刪除 %s 失敗: %s", p, e)
+    log.info("migrate: 完成")
+
+
+# === samples CRUD ===
 
 def insert_sample(ts: str, station: str, temps: List[Optional[float]]) -> None:
     """寫入一筆取樣（temps 必須長度 20；None 視為 NULL）。"""
     assert len(temps) == 20, f"temps 長度必須為 20，收到 {len(temps)}"
+    assert station in _stations(), f"未知工位: {station}"
     cols = "ts, station, " + ", ".join(f"t{i:02d}" for i in range(1, 21))
     placeholders = "?, ?, " + ", ".join("?" for _ in range(20))
     sql = f"INSERT INTO samples ({cols}) VALUES ({placeholders})"
     vals: List[Any] = [ts, station] + [t if t is not None else None for t in temps]
-    with _conn() as c:
+    with _conn_samples(station) as c:
         c.execute(sql, vals)
 
 
 def query_recent(station: str, since_minutes: int = 60) -> List[Dict[str, Any]]:
     """拉取指定工位最近 N 分鐘的 samples。"""
+    assert station in _stations(), f"未知工位: {station}"
+    _ensure_samples_table(station)
     cutoff = (datetime.now() - timedelta(minutes=since_minutes)).isoformat(timespec="seconds")
-    with _conn() as c:
+    with _conn_samples(station) as c:
         rows = c.execute(
-            "SELECT * FROM samples WHERE station = ? AND ts >= ? ORDER BY ts ASC",
-            (station, cutoff),
+            "SELECT * FROM samples WHERE ts >= ? ORDER BY ts ASC",
+            (cutoff,),
         ).fetchall()
-    return [_row_to_dict(r) for r in rows]
+    return [_row_to_dict(r, station) for r in rows]
 
 
 def query_latest(station: str) -> Optional[Dict[str, Any]]:
     """取得指定工位最新一筆。"""
-    with _conn() as c:
+    assert station in _stations(), f"未知工位: {station}"
+    _ensure_samples_table(station)
+    with _conn_samples(station) as c:
         r = c.execute(
-            "SELECT * FROM samples WHERE station = ? ORDER BY ts DESC LIMIT 1",
-            (station,),
+            "SELECT * FROM samples ORDER BY ts DESC LIMIT 1"
         ).fetchone()
-    return _row_to_dict(r) if r else None
+    return _row_to_dict(r, station) if r else None
 
 
-def _row_to_dict(r: sqlite3.Row) -> Dict[str, Any]:
-    d = {"ts": r["ts"], "station": r["station"]}
+def _row_to_dict(r: sqlite3.Row, station: str) -> Dict[str, Any]:
+    d = {"ts": r["ts"], "station": station}
     for i in range(1, 21):
         d[f"t{i:02d}"] = r[f"t{i:02d}"]
     return d
 
 
+# === 清除 / 歸檔 ===
+
+def _archive_path(station: str, ts_str: str) -> str:
+    return os.path.join(ARCHIVE_DIR, f"gx20_{station}_{ts_str}.db")
+
+
+def archive_station(station: str) -> Optional[str]:
+    """
+    把指定工位的 samples DB 歸檔到 archive/，並回傳歸檔檔路徑。
+    若該工位 DB 不存在或無資料，回傳 None。
+    """
+    assert station in _stations(), f"未知工位: {station}"
+    src = samples_db_path(station)
+    if not os.path.exists(src):
+        return None
+    # 用檔案大小判斷：空 DB 也照歸檔（一致性）
+    ts_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+    dst = _archive_path(station, ts_str)
+    try:
+        # 先關掉可能的連線（SQLite WAL 切乾淨）
+        with _conn_samples(station) as c:
+            c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        shutil.copy2(src, dst)
+        log.info("archive_station: %s 已歸檔到 %s", station, dst)
+    except Exception as e:
+        log.error("archive_station: %s 歸檔失敗: %s", station, e)
+        return None
+
+    # 輪替：超過 ARCHIVE_KEEP_PER_STATION 份，刪最舊
+    _prune_old_archives(station)
+    return dst
+
+
+def _prune_old_archives(station: str) -> int:
+    """保留最近 ARCHIVE_KEEP_PER_STATION 份，刪除其餘。回傳刪除數。"""
+    pattern = os.path.join(ARCHIVE_DIR, f"gx20_{station}_*.db*")
+    files = sorted(glob.glob(pattern))
+    # 同檔可能被列出多次（含 -wal, -shm, -journal）
+    # 依主檔名分組
+    main_files = [f for f in files if not f.endswith(("-wal", "-shm", "-journal"))]
+    if len(main_files) <= ARCHIVE_KEEP_PER_STATION:
+        return 0
+    to_delete = main_files[:-ARCHIVE_KEEP_PER_STATION]
+    deleted = 0
+    for f in to_delete:
+        try:
+            os.remove(f)
+            # 連 WAL/SHM/JOURNAL 也一起刪
+            for ext in ("-wal", "-shm", "-journal"):
+                p = f + ext
+                if os.path.exists(p):
+                    os.remove(p)
+            deleted += 1
+        except OSError as e:
+            log.warning("刪除歸檔 %s 失敗: %s", f, e)
+    if deleted:
+        log.info("歸檔輪替: 刪除 %s 的 %d 份舊歸檔", station, deleted)
+    return deleted
+
+
+def list_archives(station: Optional[str] = None) -> List[Dict[str, Any]]:
+    """
+    列出歸檔。
+      station=None → 列全部工位的歸檔
+      station='工位5' → 只列該工位
+    回傳：[{station, filename, path, size, mtime}, ...]（新到舊排序）
+    """
+    if not os.path.isdir(ARCHIVE_DIR):
+        return []
+    out: List[Dict[str, Any]] = []
+    for s in ([station] if station else _stations()):
+        pattern = os.path.join(ARCHIVE_DIR, f"gx20_{s}_*.db")
+        for f in glob.glob(pattern):
+            try:
+                st = os.stat(f)
+            except OSError:
+                continue
+            out.append({
+                "station":   s,
+                "filename":  os.path.basename(f),
+                "path":      f,
+                "size":      st.st_size,
+                "mtime":     datetime.fromtimestamp(st.st_mtime).isoformat(timespec="seconds"),
+            })
+    out.sort(key=lambda d: d["mtime"], reverse=True)
+    return out
+
+
+def clear_station_db(station: str) -> bool:
+    """
+    刪除指定工位的 samples DB。
+    注意：歸檔由呼叫端（archive_station）決定，不在此函式處理。
+    """
+    assert station in _stations(), f"未知工位: {station}"
+    path = samples_db_path(station)
+    if not os.path.exists(path):
+        return True
+    try:
+        # 先 WAL checkpoint
+        with _conn_samples(station) as c:
+            c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        # 刪主檔 + WAL/SHM
+        for ext in ("", "-wal", "-shm", "-journal"):
+            p = path + ext
+            if os.path.exists(p):
+                os.remove(p)
+        log.info("clear_station_db: 已刪除 %s 的 DB", station)
+        return True
+    except OSError as e:
+        log.error("clear_station_db: 刪除 %s DB 失敗: %s", station, e)
+        return False
+
+
+def clear_all_samples() -> int:
+    """
+    刪除所有工位的 samples DB（不動 settings）。
+    用於「確定要清空所有量測資料」場景。
+    回傳成功刪除的工位數。
+    """
+    n = 0
+    for s in _stations():
+        if clear_station_db(s):
+            n += 1
+    return n
+
+
+# === purge（保留天數） ===
+
+def purge_old_samples(retention_days: int) -> int:
+    """逐工位刪除超過保留天數的資料，回傳總刪除筆數。"""
+    if retention_days <= 0:
+        return 0
+    cutoff = (datetime.now() - timedelta(days=retention_days)).isoformat(timespec="seconds")
+    total = 0
+    for s in _stations():
+        _ensure_samples_table(s)
+        with _conn_samples(s) as c:
+            cur = c.execute("DELETE FROM samples WHERE ts < ?", (cutoff,))
+            deleted = cur.rowcount or 0
+            total += deleted
+            if deleted:
+                log.info("purge_old_samples[%s]: 刪除 %d 筆（保留 %d 天）", s, deleted, retention_days)
+    if total:
+        log.info("purge_old_samples: 總計刪除 %d 筆", total)
+    return total
+
+
 # === settings ===
 
 def get_setting(key: str, default: Optional[str] = None) -> Optional[str]:
-    with _conn() as c:
+    with _conn_settings() as c:
         r = c.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
     return r["value"] if r else default
 
 
 def set_setting(key: str, value: str) -> None:
-    with _conn() as c:
+    with _conn_settings() as c:
         c.execute(
             "INSERT INTO settings(key, value) VALUES(?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -152,28 +434,62 @@ def set_setting(key: str, value: str) -> None:
 
 
 def get_all_settings() -> Dict[str, str]:
-    with _conn() as c:
+    with _conn_settings() as c:
         rows = c.execute("SELECT key, value FROM settings").fetchall()
     return {r["key"]: r["value"] for r in rows}
 
 
+# === 統計 ===
+
+def _ensure_samples_table(station: str) -> None:
+    """確保該工位 DB 有 samples 表（DB 不存在時也順手建檔）。"""
+    if station not in _stations():
+        return
+    with _conn_samples(station) as c:
+        c.execute(SCHEMA_SAMPLES)
+        c.execute("CREATE INDEX IF NOT EXISTS idx_samples_ts ON samples(ts)")
+
+
 def count_samples() -> int:
-    with _conn() as c:
-        return c.execute("SELECT COUNT(*) AS n FROM samples").fetchone()["n"]
+    total = 0
+    for s in _stations():
+        _ensure_samples_table(s)
+        with _conn_samples(s) as c:
+            r = c.execute("SELECT COUNT(*) AS n FROM samples").fetchone()
+            total += r["n"]
+    return total
 
 
 def count_samples_by_station() -> Dict[str, int]:
-    with _conn() as c:
-        rows = c.execute("SELECT station, COUNT(*) AS n FROM samples GROUP BY station").fetchall()
-    return {r["station"]: r["n"] for r in rows}
+    out: Dict[str, int] = {}
+    for s in _stations():
+        _ensure_samples_table(s)
+        with _conn_samples(s) as c:
+            r = c.execute("SELECT COUNT(*) AS n FROM samples").fetchone()
+            out[s] = r["n"]
+    return out
+
+
+def sample_time_range(station: str) -> Optional[Dict[str, str]]:
+    """該工位最早/最晚一筆的 ts。"""
+    if station not in _stations():
+        return None
+    _ensure_samples_table(station)
+    with _conn_samples(station) as c:
+        r = c.execute("SELECT MIN(ts) AS mn, MAX(ts) AS mx FROM samples").fetchone()
+    if not r or r["mn"] is None:
+        return None
+    return {"first": r["mn"], "last": r["mx"]}
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    init_db(reset=True)
+    init_db()
     insert_sample("2026-06-09T13:50:00", "工位1", [25.0 + i * 0.1 for i in range(20)])
     print("最新:", query_latest("工位1"))
     print("近 60 分鐘筆數:", len(query_recent("工位1", 60)))
     print("總筆數:", count_samples())
-    clear_db()
-    print("清除後存在?", os.path.exists(DB_PATH))
+    print("by_station:", count_samples_by_station())
+    print("歸檔清單:", list_archives())
+    clear_station_db("工位1")
+    print("清除後存在?", os.path.exists(samples_db_path("工位1")))

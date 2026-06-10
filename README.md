@@ -4,6 +4,10 @@
 >
 > 6 工位 × 20 接點 = 120 點，每 10 秒取樣一次，**可持續記錄 7 天以上**
 >
+> **v5.0** 改版重點：6 工位獨立 DB + 清除前歸檔
+>
+> **v4.0** 改版重點：最新讀值下拉化、CSV 平均整合、設定檔同步
+>
 > **v3.0** 改版重點：debug logger、圖表精簡、X 軸範圍動態、CSV 整合匯出、設定檔同步
 >
 > **v2.0** 改版重點：資料持久化、LTTB 降取樣、明暗主題、ring buffer 計算
@@ -14,13 +18,13 @@
 
 1. [專案概述](#1-專案概述)
 2. [與桌面版差異](#2-與桌面版差異)
-3. [v3 / v4 改版總覽](#3-v3--v4-改版總覽)
+3. [v3 / v4 / v5 改版總覽](#3-v3--v4--v5-改版總覽)
 4. [系統架構](#4-系統架構)
 5. [技術選型](#5-技術選型)
 6. [資料模型（SQLite Schema）](#6-資料模型sqlite-schema)
 7. [模組設計](#7-模組設計)
 8. [設定同步檔 config/settings.json](#8-設定同步檔-configsettingsjson)
-9. [資料生命週期](#9-資料生命週期)
+9. [資料生命週期與 DB 佈局](#9-資料生命週期與-db-佈局)
 10. [效能與降取樣策略](#10-效能與降取樣策略)
 11. [前端 UI 與互動](#11-前端-ui-與互動)
 12. [路由與 API](#12-路由與-api)
@@ -85,10 +89,54 @@
 | CSV 匯出 | 全部 + 10 秒/筆 | **依 X 軸範圍 + 平均整合為 1 分鐘/筆** |
 | 跨 session 設定 | 不適用 | SQLite + JSON 檔 + sessionStorage 三層 |
 | Debug 機制 | print | 結構化 logger + 檔案輪詢 + 動態等級 |
+| DB 佈局 | 1 個 CSV | **v5：6 工位獨立 DB + 共用 settings DB + 歸檔保留 5 份** |
+| 清除手只動 | N/A | **v5：只清當前工位 + 選擇性歸檔** |
 
 ---
 
-## 3. v3 / v4 改版總覽
+## 3. v3 / v4 / v5 改版總覽
+
+### v5.0 — 6 工位獨立 DB + 清除前歸檔
+
+**背景**：6 工位非同步上下線，原有單一 `data/gx20.db` 設計會造成：
+- 清除某工位只能全刪（其他工位一起陪葬）
+- 6 工位輪流上下線，時間軸混雜難以分辨
+- 清除無歸檔，按錯救不回
+
+**佈局變更**：
+
+```
+data/
+├── gx20_<station>.db        # 每工位一份 samples 表
+├── gx20_settings.db         # 6 工位共用的 settings 表
+└── archive/
+    ├── gx20_<station>_<YYYYMMDD_HHMMSS>.db    # 清除前歸檔
+    └── gx20_pre_migration_<時間>.db            # 舊佈局 migrate 記錄
+```
+
+**新行為**：
+
+- 主畫面 / 設定頁 [清除資料] 改為 [清除此工位]
+- 點擊 → 兩段式 confirm：是否歸檔 → 確認清除
+- 歸檔自動保留最近 **5 份**（每工位各自），超過自動刪最舊
+- 設定與資料分離：清資料不會洗掉 GX20 連線、別名、顏色
+- 6 個小 DB 各自 WAL，輪流寫入比 1 個大 DB 友善
+
+**API 變更**：
+
+- `POST /api/clear` 必填 `station`（不再支援全清；如需全清帶 `station=ALL`）
+- 新增 `GET /api/archives?station=工位5` 查歸檔清單
+- `GET /api/db_stats` 加 `time_range`（每工位首/末筆時間）與 `archive_keep_per_station`
+
+**向後相容**：
+
+- 啟動時偵測舊 `data/gx20.db` → 自動 migrate
+  - 1) 整份先歸檔為 `gx20_pre_migration_<時間>.db`
+  - 2) samples 按 station 切到 6 個新 DB
+  - 3) settings 複製到新 settings DB
+  - 4) 刪除舊檔（WAL/SHM/JOURNAL 一起清）
+
+### v4.0 — 最新讀值下拉化 + CSV 平均整合 + 設定檔同步
 
 ### v3.0 — Debug logger + 圖表精簡 + 動態 X 軸
 
@@ -136,14 +184,18 @@ gx20-web-monitor/
 ├── requirements.txt                flask + flask-socketio
 ├── run.py                          啟動入口（python run.py）
 ├── gx20_reader.py                  GX20 TCP 通訊（移植自桌面版）
-├── storage.py                      SQLite 層（schema / insert / query / purge）
+├── storage.py                      SQLite 層（v5：6 工位獨立 DB + settings DB + 歸檔）
 ├── config.py                       預設值集中管理
 ├── lttb.py                         LTTB 降取樣（後端版）
 ├── app.py                          Flask + Flask-SocketIO 主程式
-├── data/
-│   └── gx20.db                     SQLite 檔（執行時建立，持久保存）
+├── data/                           SQLite 檔（v5 佈局）
+│   ├── gx20_<station>.db           每工位一份 samples
+│   ├── gx20_settings.db            6 工位共用的 settings
+│   └── archive/                    清除前歸檔（每工位保留 5 份）
+│       └── gx20_<station>_<時間>.db
 ├── config/                         設定同步檔（v4 新增）
-│   └── settings.json               啟動時若存在 → 自動套用
+│   ├── settings.json               啟動時若存在 → 自動套用
+│   └── settings.example.json       範例
 ├── logs/                           Debug logger 輸出（v3 新增）
 │   └── app.log                     RotatingFileHandler（2MB × 5）
 ├── templates/
@@ -387,15 +439,29 @@ main():
 
 ---
 
-## 9. 資料生命週期
+## 9. 資料生命週期與 DB 佈局
+
+### DB 佈局（v5）
+
+```
+data/
+├── gx20_<station>.db       # 6 工位各自一份 samples 表
+├── gx20_settings.db        # 共用 settings 表
+└── archive/
+    └── gx20_<station>_<YYYYMMDD_HHMMSS>.db   # 清除前歸檔（每工位保留 5 份）
+```
+
+- **每工位獨立 samples DB** → 6 工位可非同步上下線，不互相污染
+- **共用 settings DB** → GX20 連線 / 別名 / 顏色與資料分離
+- **歸檔保留 5 份** → 超過自動刪最舊（可由 `storage.ARCHIVE_KEEP_PER_STATION` 調整）
 
 ### 啟動
 
 ```
-1. storage.init_db(reset=False)         ← 補 schema，不刪資料
+1. _migrate_legacy_if_needed()        ← v5 自動：若偵測到舊 data/gx20.db，samples 按 station 切到 6 DB + settings 複製
 2. config/settings.json 優先套用（v4）
 3. 若 SQLite 為空 → 寫入預設值 + dump JSON
-4. storage.purge_old_samples(7)         ← 一次性清掉超過 7 天的舊資料
+4. storage.purge_old_samples(7)       ← 逐工位刪超過 7 天的舊資料
 5. 註冊 atexit / SIGINT handler（不再 clear_db）
 6. 啟動 poller thread
 7. socketio.run(...)
@@ -403,8 +469,8 @@ main():
 
 ### 執行中
 
-- 每 10 秒：poller 讀 GX20 → 寫 SQLite → 更新 ring buffer → emit `new_sample`
-- 每 5 分鐘：purge 過期資料
+- 每 10 秒：poller 讀 GX20 → 寫「該工位」的 SQLite → 更新 ring buffer → emit `new_sample`
+- 每 5 分鐘：逐工位 purge 過期資料
 - DB 持續累積，**關閉程式也不會被清空**
 - 使用者按「保存」→ 同步寫 SQLite + dump JSON
 
@@ -414,9 +480,21 @@ main():
 - **不再刪 DB**（v1 行為已拔除）
 - 下次啟動可繼續累積
 
-### 手動清除
+### 手動清除（v5）
 
-設定頁「立即清除 SQLite」按鈕（POST /api/clear）→ `clear_db()` 刪檔 + `init_db(reset=False)` 重建空 schema + 清空 ring buffer。
+主畫面或設定頁頂部 [清除此工位] 按鈕：
+
+1. **第一段 confirm**：是否先歸檔到 `data/archive/`？
+2. **第二段 confirm**：確認刪除？顯示此次會做的動作
+3. 按下確認後：
+   - `archive_station(station)` → 拷貝到 `gx20_<station>_<時間>.db` → 輪替保留 5 份
+   - `clear_station_db(station)` → 刪除該工位 DB（含 WAL/SHM/JOURNAL）
+   - 清空該工位 ring buffer
+4. 其他工位資料完全不動
+5. 設定（GX20 連線、別名、顏色）完全不動
+
+> 設定頁可以切工位 tab，所以清除時作用於「當前選定的工位」；
+> 主畫面清除時作用於「下拉選單選定的工位」。
 
 ---
 
@@ -552,8 +630,10 @@ main():
 | `/api/history/<station>` | GET | 拉歷史；支援 `?max_points=N` LTTB 降取樣、`?since_minutes=N` |
 | `/api/latest/<station>` | GET | 該站最新一筆 |
 | `/api/connection` | GET | 連線狀態、host/port |
-| `/api/db_stats` | GET | DB 統計（每工位筆數、總筆數、retention）|
-| `/api/clear` | POST | 手動一鍵清除 SQLite |
+| `/api/db_stats` | GET | DB 統計（每工位筆數、時間範圍、retention、歸檔保留份數）|
+| `/api/clear` | POST | **v5**：清除指定工位；body `{"station":"工位5", "archive":true}` |
+| `/api/archives` | GET | 查歸檔清單（`?station=工位5` 過濾）|
+| `/api/export_csv/<station>` | GET | 匯出 CSV；依 X 軸範圍 + 平均整合為 1 分鐘/筆 |
 | `/api/export_csv/<station>` | GET | 匯出 CSV；依 X 軸範圍 + 平均整合為 1 分鐘/筆 |
 | `/api/debug` | GET | 讀取 debug 狀態 |
 | `/api/debug` | POST | 切換 debug 狀態（`{"enabled": true/false}`）|
@@ -681,10 +761,12 @@ python run.py
 | 切換主題後文字看不到 | 罕見；CSS 變數未生效 | `Ctrl+Shift+R` 強制重整 |
 | console 出現 SyntaxError | 瀏覽器 cache 舊 JS | `Ctrl+Shift+R` 或開 DevTools → Network → Disable cache |
 | 設定保存後進設定頁又還原 | 極罕見；sessionStorage 被清 | 確認瀏覽器未開「關閉時清除資料」|
-| DB 異常大 | `retention_days` 設太大 | 調小，或手動按「立即清除 SQLite」|
+| DB 異常大 | `retention_days` 設太大 | 調小，或手動按「清除此工位」（v5）|
 | 找不到問題原因 | log 看不到細節 | 設定頁 → 3.7 偵錯 → 開啟 Debug log，查 `logs/app.log` |
 | CSV 匯出空白 | 該工位 / 該 X 軸範圍內無資料 | 確認 DB 內有此工位資料 |
 | 設定值重啟後不見 | `config/settings.json` 被誤刪 | 從備份還原或到設定頁重新保存 |
+| 按「清除此工位」資料不見了怎麼辦 | v5 會先歸檔 | 到 `data/archive/` 找 `gx20_<station>_<時間>.db` 手動複製回去重命名 |
+| 清資料後清錯工位 | 歸檔不見得夠 | 從 `data/archive/gx20_pre_migration_<時間>.db` 查舊資料 |
 
 ### log 位置
 

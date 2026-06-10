@@ -30,6 +30,7 @@ data/
 *.log
 nohup.out
 logs/                       # debug logger 輸出
+data/archive/               # v5 歸檔（可能有使用者資料）
 
 # Local config overrides
 .env

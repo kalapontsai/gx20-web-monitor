@@ -577,27 +577,105 @@ def api_connection():
 
 @app.route("/api/db_stats")
 def api_db_stats():
-    """資料庫統計（每工位筆數與時間範圍）。"""
+    """資料庫統計（v5：跨 6 工位 DB）。"""
     s = load_settings()
     by_station = storage.count_samples_by_station()
+    time_range = {st: storage.sample_time_range(st) for st in STATIONS}
     total = sum(by_station.values())
     return jsonify({
         "ok": True,
         "by_station": by_station,
+        "time_range": time_range,
         "total": total,
         "retention_days": int(s.get("retention_days", config.DEFAULT_RETENTION_DAYS)),
+        "archive_keep_per_station": storage.ARCHIVE_KEEP_PER_STATION,
+        "db_layout": "v5 (per-station DB + shared settings DB)",
     })
 
 
 @app.route("/api/clear", methods=["POST"])
 def api_clear():
-    """手動一鍵清除 SQLite。"""
-    storage.clear_db()
-    storage.init_db(reset=False)
+    """
+    清除指定工位的 samples（v5）。
+
+    接收：
+      - body JSON 或 query string 都可以
+        - station  = '工位5'         必填
+        - archive  = true / false     預設 true
+      - 未帶 station → 拒絕
+        （原本的「全清」按鈕已移除；如需全清可明確帶 station='ALL'）
+    流程：
+      1) 若 archive=true → 先 archive_station(station) 拷到 archive/
+      2) clear_station_db(station) 刪除該工位 DB
+      3) 清空該工位 ring buffer
+    """
+    payload = request.get_json(silent=True) or {}
+    station = (
+        payload.get("station")
+        or request.args.get("station")
+        or request.form.get("station")
+    )
+    archive_flag = (
+        payload.get("archive")
+        if "archive" in payload
+        else (request.args.get("archive", "true").lower() in ("1", "true", "yes"))
+    )
+
+    if station == "ALL":
+        # 全清（不再歸檔，避免歸檔檔爆量；如需可擴充為逐一歸檔）
+        deleted = 0
+        with state["lock"]:
+            for s in STATIONS:
+                if storage.clear_station_db(s):
+                    state["ring"][s].clear()
+                    deleted += 1
+        log.warning("api_clear: 全清 %d 個工位（未歸檔）", deleted)
+        return jsonify({"ok": True, "cleared": deleted, "archived": 0, "mode": "all"})
+
+    if not station or station not in STATIONS:
+        return jsonify({"ok": False, "error": "必須帶 station 參數（工位名）"}), 400
+
+    archived_path = None
+    if archive_flag:
+        archived_path = storage.archive_station(station)
+    else:
+        log.info("api_clear: 使用者選擇不歸檔，直接刪除 %s", station)
+
+    ok = storage.clear_station_db(station)
+    if not ok:
+        return jsonify({"ok": False, "error": "刪除 DB 失敗，請看 log"}), 500
+
+    # 清空該工位 ring buffer
     with state["lock"]:
-        for s in STATIONS:
-            state["ring"][s].clear()
-    return jsonify({"ok": True})
+        state["ring"][station].clear()
+
+    log.info("api_clear: 已清除 %s（歸檔=%s，路徑=%s）", station, archive_flag, archived_path)
+    return jsonify({
+        "ok": True,
+        "station": station,
+        "archived": bool(archived_path),
+        "archive_path": archived_path,
+        "mode": "single",
+    })
+
+
+@app.route("/api/archives", methods=["GET"])
+def api_archives():
+    """
+    列出歸檔清單。
+    Query:
+      ?station=工位5   只列該工位；不帶 → 列全部
+    """
+    s = request.args.get("station")
+    if s and s not in STATIONS:
+        return jsonify({"ok": False, "error": "unknown station"}), 404
+    archives = storage.list_archives(station=s)
+    return jsonify({
+        "ok": True,
+        "archives": archives,
+        "count": len(archives),
+        "keep_per_station": storage.ARCHIVE_KEEP_PER_STATION,
+    })
 
 
 @app.route("/api/channels")

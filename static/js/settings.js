@@ -110,10 +110,30 @@ async function init() {
     catch (e) { alert("保存失敗: " + e.message); }
   });
   document.getElementById("clearDbBtn").addEventListener("click", async () => {
-    if (!confirm("確定清除 SQLite 全部資料？")) return;
-    const r = await fetch("/api/clear", { method: "POST" });
+    // v5：兩段式 confirm，作用於「設定頁當前選定的工位」
+    const station = currentStation;
+    const archive = confirm(
+      `要清除工位「${station}」的歷史資料嗎？\n\n` +
+      `【確定】= 先歸檔到 data/archive/ 再清除（推薦）\n` +
+      `【取消】= 繼續下一個問題（問要不要直接刪除）`
+    );
+    if (!confirm(
+      `最後確認：清除工位「${station}」的資料？\n\n` +
+      `歸檔：${archive ? "是（保留到 data/archive/）" : "否（不保留）"}\n` +
+      `按下「確定」就立刻刪除，無法復原${archive ? "（但有歸檔可恢復）" : ""}。`
+    )) return;
+    const r = await fetch("/api/clear", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ station, archive }),
+    });
     const j = await r.json();
-    alert(j.ok ? "已清除" : "失敗");
+    if (j.ok) {
+      const archMsg = j.archived ? `\n歸檔：${j.archive_path}` : "\n歸檔：未保留";
+      alert(`已清除「${j.station}」${archMsg}`);
+    } else {
+      alert("清除失敗：" + (j.error || ""));
+    }
   });
   document.getElementById("themeBtn").addEventListener("click", () => {
     const next = GX20State.theme === "dark" ? "light" : "dark";

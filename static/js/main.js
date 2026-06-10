@@ -47,10 +47,40 @@ async function init() {
   });
 
   document.getElementById("clearBtn").addEventListener("click", async () => {
-    if (!confirm("確定要清除所有 SQLite 資料？此操作無法復原。")) return;
-    await fetch("/api/clear", { method: "POST" });
-    rebuildChart();
-    updateReadoutTable(null);
+    // v5：兩段式 confirm
+    // 1) 詢問是否歸檔
+    const archive = confirm(
+      `要清除工位「${currentStation}」的歷史資料嗎？\n\n` +
+      `【確定】= 先歸檔到 data/archive/ 再清除（推薦）\n` +
+      `【取消】= 繼續下一個問題（問要不要直接刪除）`
+    );
+    // 2) 詢問是否真的清除
+    if (!confirm(
+      `最後確認：清除工位「${currentStation}」的資料？\n\n` +
+      `歸檔：${archive ? "是（保留到 data/archive/）" : "否（不保留）"}\n` +
+      `按下「確定」就立刻刪除，無法復原${archive ? "（但有歸檔可恢復）" : ""}。`
+    )) return;
+
+    const btn = document.getElementById("clearBtn");
+    btn.disabled = true;
+    const oldText = btn.textContent;
+    btn.textContent = "清除中…";
+    try {
+      const r = await fetch("/api/clear", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ station: currentStation, archive }),
+      });
+      const j = await r.json();
+      if (!j.ok) { alert("清除失敗：" + (j.error || "")); return; }
+      const archMsg = j.archived ? `\n歸檔：${j.archive_path}` : "\n歸檔：未保留";
+      alert(`已清除「${j.station}」${archMsg}`);
+      rebuildChart();
+      updateReadoutTable(null);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "清除此工位";
+    }
   });
 
   // 主題切換
