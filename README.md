@@ -33,6 +33,10 @@
 15. [執行方式](#15-執行方式)
 16. [故障排除](#16-故障排除)
 17. [已知限制](#17-已知限制)
+18. [OTA 部署通道](#18-ota-部署通道)
+19. [現況進度（2026-06-11）](#19-現況進度2026-06-11-session)
+20. [功能改善路線圖](docs/IMPROVEMENTS.md)
+21. [部署 + OTA 手冊](docs/DEPLOY_OTA.md)
 
 ---
 
@@ -173,6 +177,27 @@ data/
 - 移除「歷史視窗 (分鐘)」input → 由主畫面 X 軸下拉取代
 - 移除「計算時間長度」整段（升降速率 / 平均 input）→ 由主畫面下拉取代
 - 保留 [保存] 按鈕（主畫面已無此按鈕）
+
+### v4.1 — 圖表切換 hotfix + OTA 部署通道
+
+**Bug 修正（`static/js/main.js` v4 hotfix）**：
+- 切 X 軸視窗後圖表空白 / X 軸縮成毫秒級：切換時清空 dataset 並重新拉歷史（`patchSettingAndApply` 內 `loadGen += 1` + `await loadHistory`）
+- 切主題後渲染錯亂：MutationObserver 用 `requestAnimationFrame` 排隊，銷毀前先 `chart.stop()`
+- 切站點後表格空白 / 資料停在舊時間：`loadHistory` 與 `switchStation` 用 `loadGen` 世代號保護
+- `pruneOldData` 改為「每條線至少保留 1 點」，避免 Chart.js time scale 在空 dataset 時退化到毫秒
+- Chart 加上 `normalized: true` 與 `ticks.source: "auto"`，明確指定資料格式
+
+**OTA 部署通道（`ota.py` / `ota_push.py` / `ota_watchdog.bat`）**：
+- `GET  /api/admin/status` 查狀態
+- `POST /api/admin/ota` 推單檔（multipart）
+- `POST /api/admin/ota_bundle` 一次推多檔（JSON + base64）
+- `POST /api/admin/restart` 觸發自我重啟
+- Token 認證：環境變數 / 檔案 / 自動產生
+- 白名單：限縮 `static/js/`、`static/css/`、`templates/`、核心 `.py`
+- 寫入前自動備份到 `config/ota_backup/<timestamp>/`
+- `ota_watchdog.bat` 包住 `python app.py`，崩潰或被 OTA 重啟時自動再起
+
+詳細流程見 [docs/DEPLOY_OTA.md](docs/DEPLOY_OTA.md)。
 
 ---
 
@@ -809,3 +834,341 @@ python run.py
 https://skemman.is/handle/1946/15343
 
 實作：見 `lttb.py`（後端）與 `static/js/lttb.js`（前端），兩者演算法一致。
+
+---
+
+## 18. OTA 部署通道
+
+> 完整操作手冊：[docs/DEPLOY_OTA.md](docs/DEPLOY_OTA.md)
+> 本節為**機制說明**（為什麼這樣設計、各元件怎麼互動、故障怎麼排查）
+
+### 18.1 為什麼需要 OTA
+
+| 角色 | 主機 | 工作目錄 | 同步方式 |
+|------|------|----------|----------|
+| 開發端 | WSL（PCXSSDl） | `<DEV_PATH>\` | 二寶改檔的起點 |
+| 部署端 | Windows <DEPLOY_HOST> | `<DEPLOY_PATH>\` | 跑 python app.py |
+| 同步通道 | **OTA**（HTTP） | `POST /api/admin/*` 帶 `X-OTA-Token` header | 兩端都是 Windows 跑 Python，但**沒有** OneDrive 同步 |
+
+部署端是工廠機台，沒有開發環境，也不會裝 git、rsync、雲端同步。  
+OTA 通道 = **HTTP 上傳檔 + 自我重啟**，讓二寶在 WSL 端改完 → 推檔 → 部署端自動套用。
+
+### 18.2 系統組成（4 隻元件）
+
+```
+┌─────────────────────── 開發端 (WSL) ───────────────────────┐
+│  1. ota_push.py        CLI 推送工具（單檔 / 批次 / 重啟）   │
+└──────────────────────────┬──────────────────────────────────┘
+                           │  HTTP POST + X-OTA-Token
+                           ▼
+┌─────────────────────── 部署端 (<DEPLOY_HOST>) ────────────────┐
+│  2. app.py              Flask 主進程（掛載 4 個 admin 端點）│
+│       └── ota.py        OTA 模組（白名單、Token、原子寫入）│
+│  3. ota_watchdog.bat    Watch dog（v2 自動找 python + log）│
+│       └── python app.py  ←── Flask 子進程                  │
+│  4. start_forever.bat   背景啟動器（關視窗不殺 watch dog） │
+│                                                               │
+│  config/                                                       │
+│  ├── ota_token             32 byte 隨機 token（不入版控）     │
+│  └── ota_backup/<ts>/<f>  寫入前自動備份                      │
+└───────────────────────────────────────────────────────────────┘
+```
+
+| 元件 | 角色 | 觸發時機 |
+|------|------|----------|
+| `ota_push.py` | 開發者用的 CLI（單檔 push / 批次 bundle / 純重啟 / 查狀態） | 我改完檔之後 |
+| `ota.py` | Flask 內的 OTA 模組；註冊 4 個 admin endpoint | Flask 啟動時掛載 |
+| `ota_watchdog.bat` | 包住 `python app.py` 的批次迴圈 | 崩潰或 OTA 重啟時接手 |
+| `start_forever.bat` | 用 `start /B /MIN` 把 watch dog 開成背景 | 工廠開機 / 換人接手時 |
+
+### 18.3 4 個 Admin 端點
+
+由 `ota.py` 註冊到 Flask，全部走 `X-OTA-Token` header 認證：
+
+| 方法 | 路徑 | 用途 | 請求格式 |
+|------|------|------|----------|
+| `GET`  | `/api/admin/status`     | 查 OTA 狀態、token 指紋、uptime、watch dog 版本 | — |
+| `POST` | `/api/admin/ota`        | 推**單檔**（multipart） | `multipart/form-data` + `target=相對路徑` |
+| `POST` | `/api/admin/ota_bundle` | 推**多檔**一次到位 | JSON + base64 內文 |
+| `POST` | `/api/admin/restart`    | 觸發自我重啟 | JSON `{"delay_sec": 2}` |
+
+`ota_push.py` 把這些封裝成子命令：
+
+```bash
+python3 ota_push.py status  http://<DEPLOY_HOST>:5000
+python3 ota_push.py push    http://<DEPLOY_HOST>:5000 ./static/js/main.js static/js/main.js --restart
+python3 ota_push.py bundle  http://<DEPLOY_HOST>:5000 ota_manifest.json
+python3 ota_push.py restart http://<DEPLOY_HOST>:5000
+```
+
+### 18.4 安全性（為什麼不擔心被打）
+
+| 風險 | 防護 | 實作位置 |
+|------|------|----------|
+| 未授權推檔 | Token 認證（恆定時間比對） | `ota.check_token()` |
+| 路徑穿越 `../` | `os.path.normpath` + 必須落在 `APP_ROOT` 內 | `ota.resolve_target()` |
+| 任意檔案覆蓋 | 寫入白名單 `ALLOWED_TARGETS` | `ota.is_allowed_target()` |
+| 上傳執行檔 | 黑名單副檔名 `.pyc/.so/.dll/.exe/.sh/.ps1` | `BLOCKED_EXTS`（白名單具名 .bat 例外） |
+| 寫到一半壞檔 | Atomic write：`.tmp` + `os.replace` | `ota.atomic_write()` |
+| 改壞了救不回 | 寫入前自動備份到 `config/ota_backup/<ts>/` | `ota._backup_existing()` |
+| Token 洩漏 | 不進版控（`.gitignore`）、只用指紋對照 | `.gitignore`、`token_fingerprint()` |
+
+**Token 來源優先序**：
+
+1. 環境變數 `GX20_OTA_TOKEN`（最高優先）
+2. `config/ota_token` 檔（部署端 Flask 第一次啟動自動產生 32 byte 隨機 token）
+3. 自動產生並寫入 `config/ota_token`
+
+`/api/admin/status` 只回 `token_fingerprint`（sha256 前 8 碼），**絕不回傳完整 token**。  
+二寶跟大大對照指紋即可確認兩端 token 一致，token 本身不透過 Telegram 明文傳。
+
+### 18.5 一次完整推送的時序
+
+以「修了一個 JS bug」為例：
+
+```
+開發端 (WSL)                          部署端 (<DEPLOY_HOST>)
+─────────────                         ───────────────────
+1. 改 static/js/main.js               
+2. 跑 ota_push.py push ...            
+   │
+   ├─ 讀 token (config/ota_token)     
+   ├─ POST /api/admin/ota  ────────►  3. ota.py 收到檔案
+   │   (multipart)                       ├─ 檢查 X-OTA-Token ✅
+   │                                    ├─ 檢查 target 在白名單 ✅
+   │                                    ├─ 備份原檔到 ota_backup/<ts>/
+   │                                    ├─ 寫 .tmp → os.replace ✅
+   │   ◄── {ok: true, size: 12345}      
+   │                                    
+   ├─ POST /api/admin/restart ─────►  4. ota.schedule_restart(2)
+   │   ({"delay_sec": 2})                ├─ 起一個 daemon thread
+   │   ◄── {ok: true}                    ├─ sleep 2 秒
+   │                                    └─ os._exit(0)  ← 主進程退出
+   │                                    
+   │                              ┌──► 5. ota_watchdog.bat 看到 exit code 0
+   │                              │     ├─ 視為「正常 OTA 重啟」
+   │                              │     ├─ 清掉 FAIL_COUNT
+   │                              │     ├─ timeout /t 3
+   │                              │     └─ goto LOOP
+   │                              │         └─ python app.py   ← 新 Flask 起來
+   │                              │             ├─ 載入新版 main.js
+   │                              │             └─ 廣播 socket 'version_changed'
+   │                              │
+   │   ◄── HTTP 200 (新 Flask 接手)    
+   │                                    
+6. 看到連線回 200 = 推送成功          
+7. Playwright 自動驗證圖表/主題/切站
+```
+
+關鍵設計點：
+- **OTA 自己不 spawn 新 Flask**：只讓主進程退出，由 watch dog 接手。  
+  否則 `python app.py` 會跟 `ota_watchdog.bat` 內的 `python app.py` 撞 port 5000，產生兩個 Flask 並存。
+- **exit code 區分崩潰 vs 正常重啟**：`os._exit(0)` = 正常 OTA 重啟（清 FAIL_COUNT），  
+  其他非零 = 崩潰（累計 FAIL_COUNT，5 次連敗才放手）。
+- **重啟期間前端不白屏**：socket 自動重連（Flask-SocketIO client 內建），5~8 秒後新版上線。
+
+### 18.6 寫入路徑白名單
+
+只有這些路徑可以被 OTA 覆蓋（其他路徑直接 400）：
+
+```
+前端
+  static/js/         static/css/        static/vendor/
+  templates/
+
+後端核心
+  app.py   config.py   storage.py   gx20_reader.py
+  lttb.py  run.py
+
+OTA 自己（不能改 ota.py 繞過自己的白名單檢查）
+  ota.py   ota_push.py
+  ota_watchdog.bat   start_forever.bat
+```
+
+新增可寫入檔 = 改 `ota.py` 的 `ALLOWED_TARGETS` 常數 → **必須透過 OTA 推新版 ota.py 才能加**。  
+（避免「OTA 模組自己允許自己寫入任意路徑」的循環漏洞。）
+
+### 18.7 Watch Dog 狀態機
+
+```
+            ┌─────────────────────────────────────────────┐
+            │ ota_watchdog.bat :LOOP                      │
+            └─────────────────────────────────────────────┘
+                          │
+                          ▼
+            ┌─────────────────────────────────────────────┐
+            │  python app.py                              │
+            │   ├─ 正常服務中（socket 推播、poller 跑）   │
+            │   ├─ 收到 /api/admin/restart                │
+            │   │    └─ 2 秒後 os._exit(0)                │
+            │   ├─ 收到 /api/admin/ota                   │
+            │   │    └─ atomic_write → 等下次重啟才生效   │
+            │   └─ 崩潰（未捕例外）                       │
+            │        └─ 立刻退出，exit code != 0          │
+            └─────────────────────────────────────────────┘
+                          │
+            ┌─────────────┴─────────────┐
+            │                           │
+       exit 0 (OTA)               exit != 0 (崩潰)
+            │                           │
+            ▼                           ▼
+   FAIL_COUNT ← 0           FAIL_COUNT += 1
+   timeout 3s                timeout 3s
+   goto LOOP                 若 ≥ 5 → pause 給人接手
+                             否則 goto LOOP
+```
+
+### 18.8 背景啟動（工廠現場）
+
+部署端不希望有人記得「手動跑 watch dog」 → 用 `start_forever.bat`：
+
+```cmd
+cd <DEPLOY_PATH>
+start_forever.bat
+```
+
+這個 bat 跑一行 `start "" /B /MIN cmd /c ota_watchdog.bat`：
+- `/B` = 在同 session 背景跑
+- `/MIN` = 縮到工作列
+- 父視窗關掉**不影響**子 cmd（這是 `start /B` 跟直接呼叫的差別）
+
+驗證三件事都看到才算活：
+
+```cmd
+netstat -ano | findstr :5000      ← Flask 在 listen
+tasklist | findstr python.exe     ← python 進程在跑
+type logs\watchdog.log            ← watch dog 有紀錄
+```
+
+### 18.9 故障排查對照表
+
+| 現象 | 看哪個 log | 可能原因 |
+|------|-----------|----------|
+| 推檔回 401 | — | Token 錯 / 兩端 token 指紋不一致 → `GET /api/admin/status` 對指紋 |
+| 推檔回 400 "target 不在白名單" | — | 想寫的路徑不在 `ALLOWED_TARGETS` → 改 `ota.py` 重推 |
+| 推檔回 500 "寫入失敗" | `logs/app.log` | 磁碟滿 / 權限不足 / 路徑含中文路徑問題 |
+| 重啟後 Flask 沒起來 | `logs/watchdog.log` | python 路徑找不到 / `app.py` 語法錯誤（已上線版本被改壞） |
+| Watch dog 連續 5 次退出 | `logs/watchdog.log` 看到 `[FATAL]` | `app.py` 進 startup 就崩潰；先手動跑 `python app.py` 看錯誤 |
+| 前端一直轉圈 | `logs/app.log` 的 socket 連線 | 可能是新版前端 JS 語法錯 → 從 `ota_backup` 還原 |
+| 上傳的檔內容跟本地不一樣 | — | `--target` 寫錯路徑，檔案落在白名單允許但位置不對的地方 |
+| Watch dog 跑兩份（port 5000 佔用） | `tasklist` 看到兩個 python | 之前 OTA 自己 spawn Flask 的舊 bug → 已修，v4.4 後不會發生 |
+
+### 18.10 跟 Web 版本控制的差別
+
+| 項目 | OTA（本系統） | Git + Pull | Docker 鏡像 |
+|------|--------------|-----------|-----------|
+| 部署端需要 git | 不需要 | 需要 | 不需要（看鏡像倉庫） |
+| 部署端需要 build | 不需要 | 看專案 | 需要（pull image） |
+| 部署端需要網路 | 只需能連開發端 | 只需能連 git remote | 需 registry |
+| 推送粒度 | 檔案級（單檔 / 批次） | commit 級 | image 級 |
+| 失敗回滾 | 自動備份在 `ota_backup/` | `git revert` + 拉 | 重新 pull 上一 tag |
+| 適用規模 | 1~3 台現場機 | 5+ 台 | 10+ 台 |
+| 本系統選 OTA 的原因 | 工廠機沒裝 git 也不能 build Python 套件 | — | — |
+
+---
+
+## 19. 現況進度（2026-06-11 session）
+
+本節記錄 2026-06-11 當日二寶協作發現的 bug、修法、以及進行中的工作。
+
+### 19.1 已修好的 Bug（v4 系列）
+
+實機觀察到三個**切換導致圖表錯亂**的 bug，已在 2026-06-11 全部修好並 OTA 推送。
+
+| # | Bug | 觸發情境 | 修法版本 | 驗證 |
+|---|-----|---------|---------|------|
+| 1 | X 軸切換後圖表空白 | 把 X 軸從「全部」切到「3 小時」 | v4.1 | ✅ Playwright 自動驗證 |
+| 2 | 切主題後線條消失 | 按 ☀/🌙 切到 dark / 切回 light | v4.2 | ✅ Playwright 自動驗證 |
+| 3 | 切工位後表格 0~10 秒空白 | 切換工位後右側「最新讀值」空白到下一輪 socket 推播 | v4.3 | ✅ Playwright 自動驗證 |
+
+**v4.1 重點**（X 軸切換）：
+- `patchSettingAndApply` 切 X 軸時改用 `rebuildChart()` 取代「清空 dataset + update」
+- 因為 Chart.js time scale 的 min/max 是 chart 物件初始化時計算的，後續改 `options.scales.x.min` 在空 dataset 狀態下會讓 scale 退化到毫秒級
+- `buildChart` 建好後立即把 min/max 寫進 `chart.options.scales.x`
+- `loadHistory` 拉完後再強制設一次 min/max 避免 Chart.js 用舊錨點
+- `pruneOldData` 從「至少 1 點」改為「至少 2 點」（起點 + 終點才有線）
+
+**v4.2 重點**（主題切換）：
+- 之前切主題觸發 `rebuildChart()`，會清空 dataset 但沒重拉資料，導致線條不見
+- 改成只改 chart 顏色（不重建）
+- 新增 `applyThemeToChart()`，只更新 `chart.options.scales.*.ticks.color` 與 `grid.color`
+- MutationObserver 改呼叫 `applyThemeToChart()` 而非 `rebuildChart()`
+
+**v4.3 重點**（切工位表格立即更新）：
+- 之前 `switchStation` 跑完只靠 socket 推播更新表格，10 秒一輪可能讓表格空白
+- 後端 `app.py` 的 `/api/latest/<station>` 擴充為回傳完整 `new_sample` payload（含 temps / rate / avg）
+- 前端 `switchStation` 跑完後立即呼叫 `/api/latest`，拿最新一筆填表格
+- 視覺表現：切工位後 < 1 秒就看到完整 20 列讀值
+
+### 19.2 Watch Dog 穩定性（v4.4 已上線 ✅）
+
+**問題**：v4.1 / v4.2 / v4.3 三次 OTA 重啟後，watch dog 都没撐住重啟 Flask，每次都要請大大手動重啟。
+
+**根因**：舊 `ota.schedule_restart` 用 `subprocess.Popen` spawn 一個新 `python app.py` 自己跑，**撞 watch dog 內同一個 `python app.py` → port 5000 佔用衝突**，且舊 watch dog 沒有日誌，難以事後排查。
+
+**修法（v4.4）**：
+- `ota.py.schedule_restart` 改為「只讓主進程退出」，**不自己 spawn 新 Flask**（避免跟 watch dog 撞 port 5000）
+- `ota_watchdog.bat` 升級到 v2：
+  - 自動偵測 python 絕對路徑（不依賴 PATH）
+  - 失敗時自動 fallback 常見安裝位置
+  - 所有事件寫到 `logs\watchdog.log` 便於事後診斷
+  - `python --version` 預先驗證 executable 可用
+  - 連續失敗 5 次才放手（給人接手，不無限循環）
+- 新增 `start_forever.bat`：用 `start /B /MIN` 把 watch dog 開在背景，**cmd 視窗關掉不影響 watch dog**
+- `ota.py` 白名單加入 `start_forever.bat`
+- `/api/admin/status` 加入 `uptime_seconds` 與 `ota_version: 2`
+
+**驗證結果**（2026-06-11 20:13）：
+
+| 驗證項 | 結果 |
+| ------ | ---- |
+| Flask 連線 | ✅ 5/5 HTTP 200 |
+| Watch dog 接手（單次 OTA 重啟） | ✅ 6 秒內 |
+| Watch dog 接手（連推 3 次 OTA） | ✅ 3/3 成功 |
+| 連推後所有切換（X 軸 / 主題 / 工位） | ✅ 表格 20 列無錯 |
+
+詳細 watch dog 狀態機見 [§18.7](#187-watch-dog-狀態機)，故障排查見 [§18.9](#189-故障排查對照表)。
+
+### 19.3 待辦：功能改善（Sprint 1）
+
+v4 系列 bug 修完後，原本提的三大需求進入實作階段。
+
+| 需求 | 內容 | 預估 | 狀態 |
+|------|------|------|------|
+| 加速理解的指標/統計 | 圖表極值標註、Y 軸參考線、統計摘要卡（最高/最低/平均/最大溫差）、表格新欄位（趨勢箭頭、視窗 Δ / min/max、距上次變化） | 中 | 待開工 |
+| 介面觀看便利性 | 雙 Y 軸、十字游標同步 tooltip、快捷縮放 / 框選放大、表格排序 / 凍結 / 快速過濾、點表格行高亮圖表、Sparkline 縮圖 | 中 | 待開工 |
+| 更詳細的設定參數 | 通道門檻（高/低溫 + cell 閃爍）、警報 toast、群組、顯示細節（線寬/點大小/平滑度/小數位）、Y 軸自動縮放 | 中 | 待開工 |
+
+詳細子項見 [docs/IMPROVEMENTS.md](docs/IMPROVEMENTS.md)。
+
+### 19.4 環境與工作流摘要
+
+| 角色 | 主機 | 路徑 | 備註 |
+|------|------|------|------|
+| 開發端 | WSL (PCXSSDl) | `<DEV_PATH>` | 二寶改檔的起點 |
+| 部署端 | Windows <DEPLOY_HOST> | `<DEPLOY_PATH>` | 跑 python app.py |
+| 同步通道 | OTA（HTTP） | `POST /api/admin/*` 帶 `X-OTA-Token` header | 兩端都是 Windows 跑 Python，但沒 OneDrive 同步 |
+
+**二寶工具鏈**（在 WSL 端）：
+- 程式碼：直接編輯開發端 `D:\OneDrive\...` 下的檔案
+- OTA 推送：`python3 ota_push.py push http://<DEPLOY_HOST>:5000 <local> <target> --restart`
+- 多檔推送：`python3 ota_push.py bundle http://<DEPLOY_HOST>:5000 ota_manifest.json`
+- 自動驗證：Playwright headless Chromium，跑三個切換情境 + 截圖 + 像素分析
+
+**Token 管理**：
+- 部署端 Flask 第一次啟動時自動產生 32 byte token → 寫入 `<DEPLOY_PATH>\config\ota_token`
+- 二寶的開發端用對應 token 寫入 `D:\OneDrive\...\config\ota_token`（本機路徑，**不進版控**）
+- 指紋（`sha256[:8]`）可在 `/api/admin/status` 看到，用於對照
+
+### 19.5 版本號對照（2026-06-11 20:13 快照）
+
+| 部署端檔案 | 版本 | 對應 commit / 階段 | 狀態 |
+|-----------|------|-------------------|------|
+| `static/js/main.js` | v4.3 | 切工位立即 fetch /api/latest | ✅ 已上線 |
+| `app.py` | v4.3 | `/api/latest/<station>` 回 new_sample 格式 | ✅ 已上線 |
+| `ota.py` | **v4.4** | schedule_restart 改不 spawn、加入 uptime / ota_version: 2 | ✅ 已上線 |
+| `ota_watchdog.bat` | **v2** | 自動找 python + log + 連敗 5 次放手 | ✅ 已上線 |
+| `start_forever.bat` | **v1** | 背景啟動 watch dog（`start /B /MIN`） | ✅ 已上線 |
+| `ota_push.py` | **v4.4** | CLI push / bundle / restart / status | ✅ 已上線 |
+| `templates/index.html` | `?v=5` | 瀏覽器 cache busting | ✅ 已上線 |
+| `static/css/style.css` | `?v=5` | 瀏覽器 cache busting | ✅ 已上線 |
