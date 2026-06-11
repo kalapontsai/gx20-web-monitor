@@ -557,10 +557,27 @@ def api_history(station: str):
 
 @app.route("/api/latest/<station>")
 def api_latest(station: str):
+    """取得指定工位最新一筆（完整 new_sample 格式：含 temps / rate / avg）。"""
     if station not in STATIONS:
         return jsonify({"ok": False, "error": "unknown station"}), 404
     r = storage.query_latest(station)
-    return jsonify({"ok": True, "row": r})
+    if r is None:
+        return jsonify({"ok": True, "payload": None})
+    # 組合成 onNewSample 用的 payload（讓前端可直接 updateReadoutTable）
+    s = load_settings()
+    rate_window = int(s.get("rate_window_min", config.DEFAULT_RATE_WINDOW_MIN))
+    avg_window = int(s.get("avg_window_min", config.DEFAULT_AVG_WINDOW_MIN))
+    temps = [r.get(f"t{i+1:02d}") for i in range(20)]
+    rates = [compute_rate_from_ring(station, rate_window, i) for i in range(20)]
+    avgs  = [compute_avg_from_ring(station, avg_window,  i) for i in range(20)]
+    payload = {
+        "ts":      r["ts"],
+        "station": station,
+        "temps":   temps,
+        "rate":    rates,
+        "avg":     avgs,
+    }
+    return jsonify({"ok": True, "payload": payload, "row": r})
 
 
 @app.route("/api/connection")
@@ -743,6 +760,104 @@ def api_debug_log_tail():
         })
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# ---------- OTA 管理 ----------
+
+import ota as _ota
+
+@app.route("/api/admin/status")
+def api_admin_status():
+    """
+    檢查 OTA 狀態。
+    公開可讀（不洩漏 token），只回 fingerprint 供使用者確認 token 已設定。
+    """
+    s = _ota.status()
+    return jsonify(s)
+
+
+@app.route("/api/admin/ota", methods=["POST"])
+def api_admin_ota():
+    """
+    上傳單檔 OTA 更新。
+    Header: X-OTA-Token: <token>
+    Form:
+      - file:  檔案
+      - target: 相對於 APP_ROOT 的路徑（例: static/js/main.js）
+    """
+    if not _ota.check_token(request.headers.get("X-OTA-Token")):
+        return jsonify({"ok": False, "error": "invalid or missing token"}), 401
+    target = (request.form.get("target") or "").strip()
+    if not target:
+        return jsonify({"ok": False, "error": "missing 'target' field"}), 400
+    f = request.files.get("file")
+    if not f:
+        return jsonify({"ok": False, "error": "missing 'file'"}), 400
+    content = f.read()
+    result = _ota.save_file(target, content)
+    log.info("OTA 上傳 target=%s size=%d → %s", target, len(content), result.get("ok"))
+    status_code = 200 if result.get("ok") else 400
+    return jsonify(result), status_code
+
+
+@app.route("/api/admin/ota_bundle", methods=["POST"])
+def api_admin_ota_bundle():
+    """
+    一次推多檔 OTA 更新。
+    Header: X-OTA-Token: <token>
+    Body (JSON):
+      {
+        "files": [
+          {"target": "static/js/main.js", "content_b64": "..."},
+          {"target": "templates/index.html", "content_b64": "..."}
+        ],
+        "restart": true   // 可選，呼叫後觸發自我重啟
+      }
+    """
+    if not _ota.check_token(request.headers.get("X-OTA-Token")):
+        return jsonify({"ok": False, "error": "invalid or missing token"}), 401
+    body = request.get_json(silent=True) or {}
+    files = body.get("files") or []
+    if not isinstance(files, list) or not files:
+        return jsonify({"ok": False, "error": "missing 'files' list"}), 400
+    results = []
+    all_ok = True
+    import base64 as _b64
+    for entry in files:
+        target = (entry.get("target") or "").strip()
+        b64 = entry.get("content_b64") or ""
+        try:
+            content = _b64.b64decode(b64)
+        except Exception as e:
+            results.append({"target": target, "ok": False, "error": f"base64 decode: {e}"})
+            all_ok = False
+            continue
+        r = _ota.save_file(target, content)
+        results.append(r)
+        if not r.get("ok"):
+            all_ok = False
+    log.info("OTA bundle 上傳 %d 個檔案，結果: %s", len(files),
+             "ALL OK" if all_ok else "PARTIAL/FAIL")
+    response = {"ok": all_ok, "results": results, "saved_count": sum(1 for r in results if r.get("ok"))}
+    if body.get("restart") and all_ok:
+        response["restart"] = _ota.schedule_restart(delay_sec=2)
+    return jsonify(response), (200 if all_ok else 400)
+
+
+@app.route("/api/admin/restart", methods=["POST"])
+def api_admin_restart():
+    """
+    觸發自我重啟。
+    Header: X-OTA-Token: <token>
+    Body: {"delay": 2}  // 可選，預設 2 秒
+    """
+    if not _ota.check_token(request.headers.get("X-OTA-Token")):
+        return jsonify({"ok": False, "error": "invalid or missing token"}), 401
+    body = request.get_json(silent=True) or {}
+    delay = int(body.get("delay", 2))
+    delay = max(0, min(delay, 10))
+    log.warning("管理員觸發自我重啟（%d 秒後）", delay)
+    return jsonify(_ota.schedule_restart(delay_sec=delay))
 
 
 # ---------- CSV 匯出 ----------

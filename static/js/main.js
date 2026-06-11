@@ -11,10 +11,45 @@
 //   - X 軸範圍 / 速率區間 / 平均區間 → 主畫面「最新讀值」區塊三個 select
 //     變更後立即 POST /api/settings（單一 key patch），下一輪推播即生效
 //   - 「最新讀值」表頭速率/平均的單位會跟著 select 改變
+//
+// v4 修正（2026-06-11）：
+//   - 修「切 X 軸後圖表空白 / X 軸縮成毫秒」：切 X 軸時清空 dataset 並重新拉歷史
+//   - 修「切主題後渲染錯亂」：MutationObserver 用 rAF 排隊，銷毀前先 chart.stop()
+//   - 修「切站點後表格空白 / 資料停在舊時間」：loadHistory 與 switchStation
+//     用 loadGen 世代號保護，非同步結果在站點/視窗被切走時自動丟棄
+//   - buildChart 補上 xScale.max，slideXWindow 同步更新 max，
+//     避免 Chart.js time scale 在空 dataset 時退化到毫秒級
+//   - pruneOldData 改成「每條線至少保留 1 點」，避免 dataset 全空
+//   - Chart 加上 normalized: true，明確告訴它用 {x,y} 物件資料
+//
+// v4.1 修正（2026-06-11，第二次）：
+//   - patchSettingAndApply 切 X 軸：改用 rebuildChart() 取代「清空 dataset + update」，
+//     因為 Chart.js time scale 的 min/max 是在 chart 物件初始化時計算的，後續改
+//     options.scales.x.min 在空 dataset 狀態下會讓 scale 退化到毫秒級。
+//   - buildChart 建好後立即把 min/max 寫進 chart.options.scales.x，確保生效。
+//   - patchSettingAndApply 切完 X 軸、loadHistory 拉完後，再強制設一次 min/max
+//     並 chart.update("none")，避免 Chart.js 用舊錨點計算軸。
+//   - pruneOldData 從「至少 1 點」改為「至少 2 點」（起點 + 終點才有線）。
+//
+// v4.2 修正（2026-06-11，第三次）：
+//   - 修「切主題後圖表線條消失」：之前切主題觸發 rebuildChart()，會清空
+//     dataset 但沒重拉資料，導致線條不見。改成只改 chart 顏色（不重建）。
+//   - 新增 applyThemeToChart()，只更新 chart.options.scales.*.ticks.color
+//     與 grid.color，保留 dataset 與 chart 物件本身。
+//   - MutationObserver 改呼叫 applyThemeToChart() 而非 rebuildChart()。
+//
+// v4.3 修正（2026-06-11，第四次）：
+//   - 修「切工位後表格空白 0~10 秒」：原來 switchStation 跑完只靠 socket 推播
+//     更新表格，10 秒一輪可能讓表格空白。
+//   - 新增 /api/latest/<station> 回傳完整 new_sample payload（後端 app.py 改）。
+//   - switchStation 跑完後立即呼叫 /api/latest，拿最新一筆填表格。
+//   - 視覺表現：切工位後 < 1 秒就看到完整 20 列讀值。
 
 const POINTS = 20;
 let currentStation = null;
 let chart = null;
+let themeRebuildPending = false;   // 主題切換時排隊重建，避免動畫中重入
+let loadGen = 0;                    // loadHistory / onNewSample 世代號，避免中途被站點切換打斷
 const channelNums = {};
 
 // ---------- 初始化 ----------
@@ -38,12 +73,7 @@ async function init() {
   initReadoutControls(settings);
 
   sel.addEventListener("change", () => {
-    currentStation = sel.value;
-    saveSessionExtra({ currentStation });
-    document.title = `[${currentStation}]`;
-    rebuildChart();
-    loadHistory();
-    updateReadoutTable(null);
+    switchStation(sel.value);
   });
 
   document.getElementById("clearBtn").addEventListener("click", async () => {
@@ -214,6 +244,39 @@ function initReadoutControls(settings) {
 }
 
 /**
+ * 切換站點：清空資料 → 重建 chart → 拉歷史 → 期間拒收 socket 推播
+ * 用 loadGen 確保非同步結果不會錯放到別的站位。
+ */
+async function switchStation(newStation) {
+  currentStation = newStation;
+  loadGen += 1;            // 中斷所有進行中的 loadHistory / onNewSample
+  const myGen = loadGen;
+  saveSessionExtra({ currentStation });
+  document.title = `[${currentStation}]`;
+  // 先清空右側表格並重畫 chart（避免殘留上一站資料的視覺）
+  updateReadoutTable(null);
+  rebuildChart();
+  await loadHistory(myGen);
+  // loadHistory 內部會自己檢查世代號
+  // 關鍵修正：loadHistory 拉完歷史後，右側「最新讀值」表格依賴 socket
+  // 推播更新。但 socket 推播是每 10 秒一次，剛切完可能還沒推，
+  // table 會空白 0~10 秒。改用 /api/latest 拿最新一筆立即填入。
+  if (myGen === loadGen) {
+    try {
+      const r = await fetch(`/api/latest/${encodeURIComponent(currentStation)}`);
+      if (myGen !== loadGen) return;  // 又被切走了
+      const j = await r.json();
+      if (j.ok && j.payload) {
+        updateReadoutTable(j.payload);
+        document.getElementById("lastTs").textContent = `最後更新: ${j.payload.ts}`;
+      }
+    } catch (e) {
+      // 拿不到最新也沒關係，等 socket 下一輪推播
+    }
+  }
+}
+
+/**
  * 變更設定 → 立即 POST /api/settings（單 key patch）→ 更新 GX20State → 重畫
  * 「下一個 tick」生效：後端 poller 下一次 emit new_sample 會帶新值
  * 但 X 軸要立即套用（影響 chart 範圍），所以 client 端也同步更新。
@@ -224,7 +287,25 @@ async function patchSettingAndApply(key, value, which) {
 
   // 2) 立即套用到 client（X 軸 / 表頭）
   if (which === "x") {
-    rebuildChart();
+    // X 軸視窗變更：整個重建 chart + 重拉歷史。
+    // 重要：必須 rebuildChart() 不能只清 dataset，因為 Chart.js time scale
+    // 的 min/max 是建立時計算的，之後改 options.scales.x.min 在空 dataset
+    // 狀態下會讓 scale 退化成毫秒級（出現 0.002 秒跨度的刻度）。
+    loadGen += 1;
+    rebuildChart();      // 以新視窗重建 chart（含新 min/max）
+    await loadHistory(loadGen);
+    // 拉完歷史後，鎖住 X 軸 min/max 避免下次 chart.update 又退化
+    if (chart) {
+      const xMin = Number(GX20State.settings.chart_x_minutes) || 0;
+      if (xMin > 0) {
+        chart.options.scales.x.min = Date.now() - xMin * 60 * 1000;
+        chart.options.scales.x.max = Date.now();
+      } else {
+        chart.options.scales.x.min = undefined;
+        chart.options.scales.x.max = undefined;
+      }
+      chart.update("none");
+    }
   } else if (which === "rate" || which === "avg") {
     refreshRateAvgHeaders();
   }
@@ -278,7 +359,12 @@ function buildChart() {
     });
   }
 
-  if (chart) chart.destroy();
+  // 銷毀舊 chart（保險起見，先 stop 再 destroy，避免殘留動畫）
+  if (chart) {
+    try { chart.stop(); } catch (_) { /* noop */ }
+    chart.destroy();
+    chart = null;
+  }
   const c = chartColors();
   const yMin = parseFloat(settings.y_axis_min);
   const yMax = parseFloat(settings.y_axis_max);
@@ -290,12 +376,16 @@ function buildChart() {
       tooltipFormat: "yyyy-MM-dd HH:mm:ss",
       displayFormats: { minute: "HH:mm", hour: "MM-dd HH:mm", day: "MM-dd" },
     },
-    ticks: { color: c.text, maxRotation: 0, autoSkipPadding: 20 },
+    ticks: { color: c.text, maxRotation: 0, autoSkipPadding: 20, source: "auto" },
     grid:  { color: c.grid },
+    // 給 Chart.js 一個明確的 min/max bounds，避免空 dataset 時 scale 退化到毫秒。
+    // 注意：Chart.js time scale 的 min/max 是「在 chart 物件上」的，不是 xScale 上的。
+    // 我們下面在 scales.x 再設一次，確保生效。
   };
   if (xMin > 0) {
-    // 動態 X 軸：每次 build 都以「現在」為錨點
-    xScale.min = Date.now() - xMin * 60 * 1000;
+    const now = Date.now();
+    xScale.min = now - xMin * 60 * 1000;
+    xScale.max = now;
   }
 
   chart = new Chart(ctx, {
@@ -306,6 +396,7 @@ function buildChart() {
       maintainAspectRatio: false,
       animation: false,
       parsing: false,
+      normalized: true,             // 開啟 normalized，data 用 {x,y} 才不會被當成 category
       interaction: { mode: "nearest", intersect: false },
       plugins: {
         // v3：隱藏接點 legend（顯示/隱藏統一在設定頁管理）
@@ -326,24 +417,55 @@ function buildChart() {
       },
     },
   });
+
+  // 重要：建好後立即把 min/max 寫進 chart.options（Chart.js time scale 只看這個）
+  if (xMin > 0) {
+    const now = Date.now();
+    chart.options.scales.x.min = now - xMin * 60 * 1000;
+    chart.options.scales.x.max = now;
+  }
 }
 
 function rebuildChart() { buildChart(); }
 
-// 切換主題後重畫圖表（換顏色）
-window.addEventListener("storage", (e) => {
-  if (e.key === SESSION_KEY) {
-    // 別的分頁改了，跨分頁暫存不在這用；略
-  }
-});
+/**
+ * 主題切換時只改 chart 顏色（不重建 chart、不清資料）。
+ * 重建 chart 會把 dataset 清空、資料要重拉，主題切換不該有這種副作用。
+ */
+function applyThemeToChart() {
+  if (!chart) return;
+  const c = chartColors();
+  // X 軸
+  if (chart.options.scales.x.ticks) chart.options.scales.x.ticks.color = c.text;
+  if (chart.options.scales.x.grid)  chart.options.scales.x.grid.color  = c.grid;
+  // Y 軸
+  if (chart.options.scales.y.ticks) chart.options.scales.y.ticks.color = c.text;
+  if (chart.options.scales.y.grid)  chart.options.scales.y.grid.color  = c.grid;
+  if (chart.options.scales.y.title) chart.options.scales.y.title.color = c.text;
+  chart.update("none");
+}
 
-// 監聽 body 的 data-theme 屬性變更（自訂事件）→ 重畫
-const _obs = new MutationObserver(() => { if (chart) { rebuildChart(); } });
+// 監聽 body 的 data-theme 屬性變更（自訂事件）→ 套用新顏色
+// 用 rAF 避免在 chart 內部重繪過程中重入
+const _obs = new MutationObserver(() => {
+  if (!chart || themeRebuildPending) return;
+  themeRebuildPending = true;
+  requestAnimationFrame(() => {
+    themeRebuildPending = false;
+    if (!chart) return;
+    applyThemeToChart();
+  });
+});
 _obs.observe(document.body, { attributes: true, attributeFilter: ["data-theme"] });
 
 // ---------- 拉歷史 ----------
 
-async function loadHistory() {
+/**
+ * 拉指定站位的歷史。呼叫時可帶 gen（預設用 loadGen）。
+ * 結束時若 loadGen 已變（被其他切換/操作打斷）→ 丟棄結果，避免塞到錯的 chart。
+ */
+async function loadHistory(gen) {
+  const myGen = (typeof gen === "number") ? gen : loadGen;
   try {
     const maxPoints = (GX20State.settings && GX20State.settings.max_points) || DATASET_MAX_POINTS;
     const xMin = Number(GX20State.settings.chart_x_minutes) || 0;
@@ -353,7 +475,10 @@ async function loadHistory() {
     // xMin=0 不帶 since_minutes → server 拉全部
     const url = `/api/history/${encodeURIComponent(currentStation)}?${params.toString()}`;
     const r = await fetch(url);
+    // fetch 期間若 loadGen 已變（站點/視窗被切走），直接放棄
+    if (myGen !== loadGen) return;
     const j = await r.json();
+    if (myGen !== loadGen) return;
     if (!j.ok) return;
     for (const row of j.rows) {
       const ts = new Date(row.ts).getTime();
@@ -364,15 +489,22 @@ async function loadHistory() {
         ds.data.push({ x: ts, y: v });
       }
     }
+    // 補上 LTTB 降取樣（避免 dataset 太肥）
+    for (const ds of chart.data.datasets) {
+      if (ds.data.length > DATASET_MAX_POINTS) {
+        ds.data = window.lttb(ds.data, DATASET_MAX_POINTS);
+      }
+    }
     chart.update("none");
   } catch (e) {
-    console.error("loadHistory:", e);
+    if (myGen === loadGen) console.error("loadHistory:", e);
   }
 }
 
 // ---------- SocketIO：即時資料 ----------
 
 function onNewSample(payload) {
+  if (!chart) return;
   if (payload.station !== currentStation) return;
   const ts = new Date(payload.ts).getTime();
   for (const ds of chart.data.datasets) {
@@ -397,13 +529,16 @@ function pruneOldData() {
   if (xMin > 0) {
     const cutoff = Date.now() - xMin * 60 * 1000;
     for (const ds of chart.data.datasets) {
-      while (ds.data.length && ds.data[0].x < cutoff) ds.data.shift();
+      // 每條線至少保留 2 個點：
+      //   1) 避免 dataset 全空時 Chart.js time scale 退化成毫秒級
+      //   2) 至少要有起點 + 終點，畫面才會顯示成線
+      while (ds.data.length > 2 && ds.data[0].x < cutoff) ds.data.shift();
       if (ds.data.length > DATASET_MAX_POINTS) {
         ds.data = window.lttb(ds.data, DATASET_MAX_POINTS);
       }
     }
   } else {
-    // 全部資料模式：只做點數上限保護
+    // 全部資料模式：只做點數上限保護（不裁剪）
     for (const ds of chart.data.datasets) {
       if (ds.data.length > DATASET_MAX_POINTS) {
         ds.data = window.lttb(ds.data, DATASET_MAX_POINTS);
@@ -418,12 +553,24 @@ function pruneOldData() {
  * Chart.js time scale 預設不會自動 slide min，這裡手動更新。
  */
 function slideXWindow() {
+  // 隨著時間流逝，X 軸「現在」的錨點要跟著往右滑，
+  // 否則使用者看到的有效區間會一直縮小。
+  // 規則：只要 chart 有資料，就更新 min/max。
+  // 若 chart 還沒資料（空 dataset）→ 不動，避免退化。
+  if (!chart) return;
   const xMin = Number(GX20State.settings.chart_x_minutes) || 0;
-  if (xMin <= 0 || !chart) return;
-  const newMin = Date.now() - xMin * 60 * 1000;
-  if (chart.options.scales.x.min !== newMin) {
-    chart.options.scales.x.min = newMin;
+  if (xMin <= 0) {
+    // 「全部」模式：讓 Chart.js 自動決定（不鎖 min/max）
+    if (chart.options.scales.x.min !== undefined) chart.options.scales.x.min = undefined;
+    if (chart.options.scales.x.max !== undefined) chart.options.scales.x.max = undefined;
+    return;
   }
+  // 有 xMin 時：鎖定「最新資料點」到「最新 - xMin 分鐘」這個滑動視窗
+  const newMin = Date.now() - xMin * 60 * 1000;
+  const newMax = Date.now();
+  // 只在真的改變時寫，避免觸發不必要的重算
+  if (chart.options.scales.x.min !== newMin) chart.options.scales.x.min = newMin;
+  if (chart.options.scales.x.max !== newMax) chart.options.scales.x.max = newMax;
 }
 
 // ---------- 右側表格（名稱、讀值、速率、平均） ----------

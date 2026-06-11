@@ -35,3 +35,5 @@ data/archive/               # v5 歸檔（可能有使用者資料）
 # Local config overrides
 .env
 config/settings.json        # 使用者實際設定（可能含個資別名）；保留 settings.example.json
+config/ota_token            # OTA 認證 token（絕不進版控；部署端各自產生）
+config/ota_backup/          # OTA 寫入前的備份（不必進版控）
