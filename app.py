@@ -35,6 +35,7 @@ v3 變更:
   POST /api/settings           寫入設定
   GET  /api/history/<station>  拉取該站歷史，支援 ?max_points=N 自動 LTTB 降取樣
   GET  /api/latest/<station>   該站最新一筆
+  GET  /api/cursor/coverage    游標模式專用：查詢區間內資料覆蓋率
   GET  /api/connection         連線狀態
   POST /api/clear              手動清除 SQLite
   GET  /api/db_stats           資料庫統計（用於監看）
@@ -597,6 +598,64 @@ def api_history(station: str):
         "original_count": original_count,
         "downsampled": downsampled,
         "max_points": max_points,
+    })
+
+
+@app.route("/api/cursor/coverage")
+def api_cursor_coverage():
+    """游標模式專用：查詢指定工位在 [t1, t2] 區間內的資料覆蓋率。
+
+    用途：前端拖曳游標時，debounce 300ms 後打這支 API，
+    用 SQLite 原始 COUNT(*) 判斷區間內資料是否完整，以反映斷線。
+
+    Query string:
+      station=  工位名（必填）
+      t1=       起始時間 ISO 8601（必填）
+      t2=       終止時間 ISO 8601（必填）
+
+    Response:
+      {
+        "ok": true,
+        "actual":   87,         // 區間內實際筆數
+        "expected": 630,        // 預期筆數 = 區間秒數 / poll_interval_sec
+        "pct":      13.8,       // 覆蓋率 %
+        "interval_sec": 10      // poll 週期（從 settings 讀）
+      }
+    """
+    station = request.args.get("station", "")
+    t1 = request.args.get("t1", "")
+    t2 = request.args.get("t2", "")
+    if not station or not t1 or not t2:
+        return jsonify({"ok": False, "error": "station/t1/t2 必填"}), 400
+    if station not in STATIONS:
+        return jsonify({"ok": False, "error": "unknown station"}), 404
+    try:
+        dt1 = datetime.fromisoformat(t1)
+        dt2 = datetime.fromisoformat(t2)
+    except ValueError:
+        return jsonify({"ok": False, "error": "t1/t2 須為 ISO 8601"}), 400
+    if dt2 <= dt1:
+        return jsonify({"ok": False, "error": "t2 須大於 t1"}), 400
+
+    s = load_settings()
+    interval_sec = int(s.get("poll_interval_sec", config.POLL_INTERVAL_SEC))
+    if interval_sec <= 0:
+        interval_sec = config.POLL_INTERVAL_SEC
+
+    seconds = (dt2 - dt1).total_seconds()
+    expected = max(1, int(seconds / interval_sec))   # 預期完整筆數（至少 1 避免除以 0）
+    actual = storage.query_count_in_range(
+        station,
+        dt1.isoformat(timespec="seconds"),
+        dt2.isoformat(timespec="seconds"),
+    )
+    pct = round(actual / expected * 100, 1) if expected > 0 else 0.0
+    return jsonify({
+        "ok": True,
+        "actual": actual,
+        "expected": expected,
+        "pct": pct,
+        "interval_sec": interval_sec,
     })
 
 

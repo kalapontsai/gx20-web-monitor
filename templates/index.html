@@ -6,7 +6,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <title>GX20 溫度監視</title>
-<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=5">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=6">
 <script src="{{ url_for('static', filename='vendor/chart.umd.min.js') }}"></script>
 <script src="{{ url_for('static', filename='vendor/chartjs-adapter-date-fns.bundle.min.js') }}"></script>
 <script src="{{ url_for('static', filename='vendor/socket.io.min.js') }}"></script>
@@ -34,10 +34,27 @@
 <main>
   <section class="chart-area">
     <canvas id="chart"></canvas>
+    <!-- 游標模式 overlay：只在量測狀態下顯示（由 JS 加 .active 切換） -->
+    <div id="cursorOverlay" class="cursor-overlay" aria-hidden="true">
+      <div id="cursorRange" class="cursor-range" hidden></div>
+      <div id="cursorLeft"  class="cursor-bar cursor-left"  data-side="left"  hidden>
+        <span class="cursor-time" id="cursorLeftTime"></span>
+      </div>
+      <div id="cursorRight" class="cursor-bar cursor-right" data-side="right" hidden>
+        <span class="cursor-time" id="cursorRightTime"></span>
+      </div>
+    </div>
   </section>
 
   <aside class="readout">
-    <h3>最新讀值</h3>
+    <div class="readout-header">
+      <h3>最新讀值</h3>
+      <!-- 量測模式 toggle：游標值 / 即時狀態 -->
+      <div class="mode-toggle" role="group" aria-label="最新讀值模式">
+        <button type="button" id="modeLiveBtn"    class="mode-btn active" data-mode="live">即時狀態</button>
+        <button type="button" id="modeCursorBtn"  class="mode-btn"        data-mode="cursor">量測狀態</button>
+      </div>
+    </div>
     <div class="readout-controls">
       <label>X 軸：
         <select id="chartXSel">
@@ -76,6 +93,17 @@
         </select>
       </label>
     </div>
+    <!-- 區間資訊列：只在量測模式顯示 -->
+    <div id="cursorInfo" class="cursor-info" hidden>
+      <div class="cursor-info-row">
+        <span class="cursor-info-label">區間：</span>
+        <span id="cursorInfoRange">—</span>
+      </div>
+      <div class="cursor-info-row">
+        <span class="cursor-info-label">資料覆蓋：</span>
+        <span id="cursorInfoCoverage">計算中…</span>
+      </div>
+    </div>
     <table id="readoutTable">
       <thead><tr>
         <th>#</th>
@@ -89,8 +117,8 @@
   </aside>
 </main>
 
-<script src="{{ url_for('static', filename='js/storage.js') }}?v=5"></script>
-<script src="{{ url_for('static', filename='js/lttb.js') }}?v=5"></script>
-<script src="{{ url_for('static', filename='js/main.js') }}?v=5"></script>
+<script src="{{ url_for('static', filename='js/storage.js') }}?v=6"></script>
+<script src="{{ url_for('static', filename='js/lttb.js') }}?v=6"></script>
+<script src="{{ url_for('static', filename='js/main.js') }}?v=6"></script>
 </body>
 </html>

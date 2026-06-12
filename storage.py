@@ -265,6 +265,30 @@ def query_latest(station: str) -> Optional[Dict[str, Any]]:
     return _row_to_dict(r, station) if r else None
 
 
+def query_count_in_range(station: str, ts_from: str, ts_to: str) -> int:
+    """計算指定工位在 [ts_from, ts_to] 區間內的樣本筆數。
+
+    用來支援游標模式（量測狀態）的「資料覆蓋率」計算。
+    不取資料本體，只取 COUNT(*)，用於和「理論完整筆數」比較以判斷斷線落差。
+
+    Args:
+        station: 工位名
+        ts_from: 起始時間（ISO 8601 字串，含時區）
+        ts_to:   終止時間（ISO 8601 字串，含時區）
+
+    Returns:
+        區間內的樣本筆數；無資料回傳 0
+    """
+    assert station in _stations(), f"未知工位: {station}"
+    _ensure_samples_table(station)
+    with _conn_samples(station) as c:
+        r = c.execute(
+            "SELECT COUNT(*) AS cnt FROM samples WHERE ts >= ? AND ts <= ?",
+            (ts_from, ts_to),
+        ).fetchone()
+    return int(r["cnt"]) if r else 0
+
+
 def _row_to_dict(r: sqlite3.Row, station: str) -> Dict[str, Any]:
     d = {"ts": r["ts"], "station": station}
     for i in range(1, 21):

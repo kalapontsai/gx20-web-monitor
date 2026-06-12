@@ -133,6 +133,9 @@ async function init() {
 
   buildChart();
   loadHistory();
+
+  // v6 游標模式
+  initCursorMode();
 }
 
 // 站點選擇另外存（不歸 GX20State 核心設定管）
@@ -545,6 +548,8 @@ async function loadHistory(gen) {
 function onNewSample(payload) {
   if (!chart) return;
   if (payload.station !== currentStation) return;
+  // v6：保存最近一次的 payload，供 setCursorMode 切回 live 時重畫表格用
+  chart._lastPayload = payload;
   const ts = new Date(payload.ts).getTime();
   for (const ds of chart.data.datasets) {
     const idx = ds.pointIndex;
@@ -555,7 +560,13 @@ function onNewSample(payload) {
   // X 軸動態：select 是分鐘錨點，隨時間流逝錨點也要跟著滑動
   slideXWindow();
   chart.update("none");
+  // v6 游標模式：X 軸滑動後，游標線的 pixel 位置需要重算才能對齊
+  if (typeof cursorState !== "undefined" && cursorState.mode === "cursor" && typeof layoutCursorBars === "function") {
+    layoutCursorBars();
+  }
   document.getElementById("lastTs").textContent = `最後更新: ${payload.ts}`;
+  // v6 游標模式：量測狀態下不更新右側表格（避免平均/最大/最小被即時溫度覆蓋）
+  if (typeof cursorState !== "undefined" && cursorState.mode === "cursor") return;
   updateReadoutTable(payload);
 }
 
@@ -616,6 +627,8 @@ function slideXWindow() {
 // 名稱規則：別名優先，別名為空時顯示頻道號
 
 function updateReadoutTable(payload) {
+  // v6 游標模式：量測狀態下不更新右側表格（避免被即時溫度覆蓋）
+  if (typeof cursorState !== "undefined" && cursorState.mode === "cursor") return;
   const tbody = document.querySelector("#readoutTable tbody");
   tbody.innerHTML = "";
   if (!payload) return;
@@ -733,3 +746,402 @@ async function exportCurrentStationAsCsv() {
 }
 
 window.addEventListener("DOMContentLoaded", init);
+
+// =====================================================================
+// v6 進階計算：游標模式（量測狀態）
+// =====================================================================
+//
+// 模式狀態：'live'（即時）或 'cursor'（量測）。
+// 切換邏輯：
+//   - 即時 → 隱藏游標線、表格顯示即時溫度
+//   - 量測 → 顯示兩條可拖曳游標線、表格顯示區間平均/最大/最小
+//
+// 互動規則：
+//   - 拖曳游標：即時更新平均/最大/最小（純前端，從 chart dataset 取值）
+//   - 拖曳停止 300ms 後：打 /api/cursor/coverage 查實際筆數（debounce）
+//   - 切換工位：強制回 'live'
+//   - 切換 X 軸：游標位置重置為新範圍的 25% / 75%
+
+const CURSOR_DEBOUNCE_MS = 300;
+
+const cursorState = {
+  mode: 'live',        // 'live' | 'cursor'
+  tsLeft:  null,       // Date
+  tsRight: null,       // Date
+  coverageTimer: null, // debounce timer id
+};
+
+function initCursorMode() {
+  // toggle 按鈕
+  document.getElementById("modeLiveBtn").addEventListener("click", () => setCursorMode("live"));
+  document.getElementById("modeCursorBtn").addEventListener("click", () => setCursorMode("cursor"));
+
+  // 切換工位時 → 強制回 live
+  document.getElementById("stationSelect").addEventListener("change", () => {
+    setCursorMode("live");
+  });
+
+  // 切換 X 軸時 → 游標線重置（但模式保留）
+  document.getElementById("chartXSel").addEventListener("change", () => {
+    if (cursorState.mode === "cursor") {
+      resetCursorPositions();
+    }
+  });
+
+  // 拖曳：分別給左右游標線綁 mousedown
+  bindCursorDrag("cursorLeft");
+  bindCursorDrag("cursorRight");
+}
+
+function setCursorMode(mode) {
+  cursorState.mode = mode;
+  const liveBtn   = document.getElementById("modeLiveBtn");
+  const cursorBtn = document.getElementById("modeCursorBtn");
+  const overlay   = document.getElementById("cursorOverlay");
+  const info      = document.getElementById("cursorInfo");
+  const table     = document.getElementById("readoutTable");
+
+  // 切換按鈕 active 樣式
+  if (mode === "live") {
+    liveBtn.classList.add("active");
+    cursorBtn.classList.remove("active");
+    overlay.classList.remove("active");
+    info.hidden = true;
+    table.classList.remove("cursor-mode");
+    // 隱藏游標線
+    document.getElementById("cursorLeft").hidden  = true;
+    document.getElementById("cursorRight").hidden = true;
+    document.getElementById("cursorRange").hidden = true;
+    // 取消 pending 的 coverage API
+    if (cursorState.coverageTimer) {
+      clearTimeout(cursorState.coverageTimer);
+      cursorState.coverageTimer = null;
+    }
+    // 表格立即恢復即時模式（用當前 payload）
+    if (chart && chart._lastPayload) {
+      rerenderLiveReadout();
+    } else {
+      updateReadoutTable(null);
+    }
+  } else {
+    cursorBtn.classList.add("active");
+    liveBtn.classList.remove("active");
+    overlay.classList.add("active");
+    info.hidden = false;
+    table.classList.add("cursor-mode");
+    // 顯示游標線（如尚未初始化則 reset）
+    document.getElementById("cursorLeft").hidden  = false;
+    document.getElementById("cursorRight").hidden = false;
+    document.getElementById("cursorRange").hidden = false;
+    if (!cursorState.tsLeft || !cursorState.tsRight) {
+      resetCursorPositions();
+    } else {
+      layoutCursorBars();
+      updateCursorInfo();
+    }
+  }
+}
+
+/**
+ * 重置游標位置到當前圖表 X 軸範圍的 25% / 75%。
+ * 必須在 chart 已 build 且 dataset 至少 1 點後呼叫。
+ */
+function resetCursorPositions() {
+  if (!chart) return;
+  const xScale = chart.scales.x;
+  if (!xScale) return;
+  const min = xScale.min;
+  const max = xScale.max;
+  if (min == null || max == null || max <= min) return;
+  const span = max - min;
+  cursorState.tsLeft  = new Date(min + span * 0.25);
+  cursorState.tsRight = new Date(min + span * 0.75);
+  layoutCursorBars();
+  updateCursorInfo();
+}
+
+/**
+ * 把游標線的 CSS left / width 對齊到 chart 的 pixel 座標。
+ * 使用 chart 內建 helpers 處理 scale → pixel 換算。
+ */
+function layoutCursorBars() {
+  if (!chart) return;
+  const xScale = chart.scales.x;
+  if (!xScale) return;
+  const chartArea = chart.chartArea;
+  if (!chartArea) return;
+  const canvasRect = chart.canvas.getBoundingClientRect();
+  const leftPx  = xScale.getPixelForValue(cursorState.tsLeft.getTime());
+  const rightPx = xScale.getPixelForValue(cursorState.tsRight.getTime());
+
+  // chartArea 在 canvas 內部的偏移；overlay 套在 .chart-area 上，
+  // 與 canvas 同位置 (padding 8px)，所以 leftPx 需扣掉 chartArea.left 再加 padding(8)
+  const padding = 8;
+  const leftCss  = (chartArea.left - padding) + (leftPx  - chartArea.left) + "px";
+  const rightCss = (chartArea.left - padding) + (rightPx - chartArea.left) + "px";
+
+  const barL = document.getElementById("cursorLeft");
+  const barR = document.getElementById("cursorRight");
+  const range = document.getElementById("cursorRange");
+
+  barL.style.left  = leftCss;
+  barR.style.left  = rightCss;
+  range.style.left  = leftCss;
+  range.style.width = (rightPx - leftPx) + "px";
+
+  // 拖曳 line 頂端的時間標籤
+  document.getElementById("cursorLeftTime").textContent  = _fmtTs(cursorState.tsLeft);
+  document.getElementById("cursorRightTime").textContent = _fmtTs(cursorState.tsRight);
+}
+
+function _fmtTs(d) {
+  if (!d) return "—";
+  const p = n => String(n).padStart(2, "0");
+  return `${p(d.getMonth()+1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+/**
+ * 給兩條游標線綁定拖曳行為。
+ * side = 'left' | 'right'
+ */
+function bindCursorDrag(id) {
+  const el = document.getElementById(id);
+  const side = el.dataset.side;
+  let dragging = false;
+
+  const onDown = (e) => {
+    if (cursorState.mode !== "cursor") return;
+    dragging = true;
+    el.setPointerCapture && el.setPointerCapture(e.pointerId ?? 0);
+    e.preventDefault();
+  };
+  const onMove = (e) => {
+    if (!dragging) return;
+    if (!chart) return;
+    const xScale = chart.scales.x;
+    const chartArea = chart.chartArea;
+    if (!xScale || !chartArea) return;
+    // clientX → 相對 chartArea 的 pixel
+    const rect = chart.canvas.getBoundingClientRect();
+    const xInChart = e.clientX - rect.left;
+    // clamp 到 chartArea
+    if (xInChart < chartArea.left) return;  // 交給 layoutCursorBars 邊界
+    if (xInChart > chartArea.right) return;
+    const ts = xScale.getValueForPixel(xInChart);
+    const newTs = new Date(ts);
+    if (side === "left") {
+      if (newTs >= cursorState.tsRight) return;   // 不超過右線
+      cursorState.tsLeft = newTs;
+    } else {
+      if (newTs <= cursorState.tsLeft) return;    // 不低於左線
+      cursorState.tsRight = newTs;
+    }
+    layoutCursorBars();
+    updateReadoutFromCursor();
+    scheduleCoverageRequest();
+  };
+  const onUp = (e) => {
+    dragging = false;
+  };
+
+  el.addEventListener("mousedown", onDown);
+  el.addEventListener("touchstart", onDown, { passive: false });
+  window.addEventListener("mousemove", onMove);
+  window.addEventListener("touchmove", onMove, { passive: false });
+  window.addEventListener("mouseup", onUp);
+  window.addEventListener("touchend", onUp);
+}
+
+/**
+ * 從 chart dataset 過濾出 [tsLeft, tsRight] 區間內的資料，
+ * 依每個 channel 計算 平均 / 最大 / 最小，並更新表格。
+ *
+ * 分母 = 區間內實際筆數（沿用 v6 avg 原則：分母 = 實際筆數，不補 0）
+ *
+ * 即使資料筆數 < 理論完整筆數，也照算（這是「量測模式」的語意：
+ * 使用者拖曳出來的範圍就是他要看的）。
+ */
+function updateReadoutFromCursor() {
+  if (!chart) return;
+  const settings = GX20State.settings;
+  const tL = cursorState.tsLeft.getTime();
+  const tR = cursorState.tsRight.getTime();
+
+  const tbody = document.querySelector("#readoutTable tbody");
+  tbody.innerHTML = "";
+  for (let i = 0; i < POINTS; i++) {
+    if (!settings.ch_visibility[currentStation][i]) continue;
+    const alias = (settings.ch_alias[currentStation][i] || "").trim();
+    const fallback = channelNums[currentStation]?.[i] || `Ch${i+1}`;
+    const name = alias || fallback;
+    const color = settings.ch_color[currentStation][i];
+
+    // 找對應 dataset
+    const ds = chart.data.datasets.find(d => d.pointIndex === i);
+    let avg = null, max = null, min = null;
+    if (ds) {
+      const vals = [];
+      for (const p of ds.data) {
+        if (p.x >= tL && p.x <= tR && p.y !== null && p.y !== undefined && !Number.isNaN(p.y)) {
+          vals.push(p.y);
+        }
+      }
+      if (vals.length > 0) {
+        avg = vals.reduce((a, b) => a + b, 0) / vals.length;
+        max = Math.max(...vals);
+        min = Math.min(...vals);
+      }
+    }
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${i+1}</td>
+      <td><span class="swatch" style="background:${color}"></span>${escapeHtml(name)}</td>
+      <td>—</td>
+      <td>—</td>
+      <td class="cell-avg">${fmt(avg, 2)}</td>
+    `;
+    // 量測模式加 max / min 兩欄需要更動表頭；為了不破壞既有表頭結構，
+    // 把 max / min 放進同一個 cell 內以「(max~min)」格式呈現。
+    // 但會擠；先維持簡單：另存到 data-* 屬性，後續可擴充。
+    tr.dataset.max = max == null ? "" : max.toFixed(2);
+    tr.dataset.min = min == null ? "" : min.toFixed(2);
+    tr.dataset.avg = avg  == null ? "" : avg.toFixed(2);
+    tbody.appendChild(tr);
+  }
+  // 表頭改為量測模式：把 "讀值/速率/平均" 換成 "平均/最大/最小"
+  // 但既有的 th 結構是固定的，這裡直接改 textContent 比較單純。
+  document.getElementById("rateTh").textContent = "最大";
+  document.getElementById("avgTh").textContent  = "最小";
+  // 讀值欄位在量測模式不適用（顯示 —），把第一個資料 td 改為平均，最大/最小填到後兩欄
+  // 為簡化，這裡重新組一次 row 結構：
+  // 由於前面已建好 tr，重新走一次把 cell 內容對調
+  const trs = tbody.querySelectorAll("tr");
+  trs.forEach(tr => {
+    const tds = tr.querySelectorAll("td");
+    if (tds.length < 5) return;
+    const avg = tr.dataset.avg;
+    const max = tr.dataset.max;
+    const min = tr.dataset.min;
+    tds[2].textContent = avg ? avg : "—";
+    tds[2].className   = "cell-avg";
+    tds[3].textContent = max ? max : "—";
+    tds[3].className   = "cell-max";
+    tds[4].textContent = min ? min : "—";
+    tds[4].className   = "cell-min";
+  });
+}
+
+/**
+ * 切回即時模式時，恢復原本的表頭文字。
+ */
+function restoreReadoutHeaders() {
+  const rate = Number(GX20State.settings.rate_window_min) || 5;
+  const avg  = Number(GX20State.settings.avg_window_min)  || 10;
+  document.getElementById("rateTh").textContent = `速率 (°C/${_fmtMinLabel(rate)})`;
+  document.getElementById("avgTh").textContent  = `平均 (°C/${_fmtMinLabel(avg)})`;
+}
+
+/**
+ * 更新「區間：xx ~ yy (duration)」「資料覆蓋：xx 筆 / 預期 yy 筆 (zz%)」這兩列。
+ */
+function updateCursorInfo() {
+  if (!cursorState.tsLeft || !cursorState.tsRight) return;
+  const tL = cursorState.tsLeft;
+  const tR = cursorState.tsRight;
+  const durSec = Math.max(0, (tR - tL) / 1000);
+  const durTxt = _fmtDuration(durSec);
+  document.getElementById("cursorInfoRange").textContent =
+    `${_fmtTs(tL)} ~ ${_fmtTs(tR)}  (${durTxt})`;
+
+  const cov = document.getElementById("cursorInfoCoverage");
+  cov.textContent = "計算中…";
+  cov.className = "calculating";
+  cov.classList.remove("warn");
+}
+
+function _fmtDuration(sec) {
+  if (sec < 60) return `${Math.round(sec)} 秒`;
+  if (sec < 3600) return `${Math.floor(sec/60)} 分 ${Math.round(sec%60)} 秒`;
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  return `${h} 時 ${m} 分`;
+}
+
+/**
+ * Debounce 300ms 後打 /api/cursor/coverage 更新覆蓋率。
+ * 拖曳中不重複打 API，停下 0.3 秒後才送。
+ */
+function scheduleCoverageRequest() {
+  if (!currentStation) return;
+  if (cursorState.coverageTimer) {
+    clearTimeout(cursorState.coverageTimer);
+  }
+  cursorState.coverageTimer = setTimeout(async () => {
+    cursorState.coverageTimer = null;
+    const tL = cursorState.tsLeft.toISOString();
+    const tR = cursorState.tsRight.toISOString();
+    const cov = document.getElementById("cursorInfoCoverage");
+    try {
+      const resp = await fetch(`/api/cursor/coverage?station=${encodeURIComponent(currentStation)}&t1=${encodeURIComponent(tL)}&t2=${encodeURIComponent(tR)}`);
+      const j = await resp.json();
+      if (!j.ok) {
+        cov.textContent = "查詢失敗";
+        cov.className = "";
+        cov.classList.add("warn");
+        return;
+      }
+      cov.textContent = `${j.actual} 筆 / 預期 ${j.expected} 筆 (${j.pct}%)`;
+      cov.className = "";
+      if (j.pct < 50) cov.classList.add("warn");
+    } catch (e) {
+      cov.textContent = "查詢失敗";
+      cov.className = "";
+      cov.classList.add("warn");
+    }
+  }, CURSOR_DEBOUNCE_MS);
+}
+
+// 游標模式與原 onNewSample / updateReadoutTable 的協作：
+// 1. onNewSample 內若 cursorState.mode === 'cursor'，就只更新 chart dataset，
+//    不更新右側表格（避免平均值/最大值/最小值被即時溫度覆蓋）
+// 2. updateReadoutTable 同理：cursor 模式下直接 return
+// 3. 切回 live 模式時，setCursorMode() 會用 chart._lastPayload 重畫一次表格
+//
+// 上面的 guard 邏輯是「補在」原本函式內的，這個檔案原本的 onNewSample /
+// updateReadoutTable 已 patch 過（用條件判斷）。本檔末尾不再做 monkey-patch。
+
+// 供 setCursorMode 切回 live 時重畫表格用
+function rerenderLiveReadout() {
+  if (chart && chart._lastPayload) {
+    restoreReadoutHeaders();
+    _updateReadoutTableOriginal(chart._lastPayload);
+  }
+}
+
+// 保留原本 updateReadoutTable 的引用（給 rerenderLiveReadout 用）
+// 因為 updateReadoutTable 本身在前面已加上 guard，這裡給它一個「無 guard」版本
+function _updateReadoutTableOriginal(payload) {
+  if (!payload) return;
+  const tbody = document.querySelector("#readoutTable tbody");
+  tbody.innerHTML = "";
+  const settings = GX20State.settings;
+  for (let i = 0; i < POINTS; i++) {
+    if (!settings.ch_visibility[currentStation][i]) continue;
+    const alias = (settings.ch_alias[currentStation][i] || "").trim();
+    const fallback = channelNums[currentStation]?.[i] || `Ch${i+1}`;
+    const name = alias || fallback;
+    const color = settings.ch_color[currentStation][i];
+    const v = payload.temps[i];
+    const r = payload.rate ? payload.rate[i] : null;
+    const a = payload.avg  ? payload.avg[i]  : null;
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${i+1}</td>
+      <td><span class="swatch" style="background:${color}"></span>${escapeHtml(name)}</td>
+      <td>${fmt(v, 1)}</td>
+      <td>${fmtRate(r)}</td>
+      <td>${fmt(a, 2)}</td>
+    `;
+    tbody.appendChild(tr);
+  }
+}

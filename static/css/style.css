@@ -344,3 +344,140 @@ main {
 .color-popover .swatch:hover { outline: 2px solid var(--text); }
 .color-popover .gray-row { grid-column: 1 / -1; display: flex; gap: 2px; margin-top: 4px; }
 .color-popover .gray-row .swatch { width: 16px; height: 16px; }
+
+/* === v6 進階計算：游標模式樣式 === */
+
+.readout-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 8px;
+  padding-bottom: 4px;
+  gap: 8px;
+}
+.readout-header h3 {
+  margin: 0;
+  border-bottom: none;
+  padding-bottom: 0;
+  font-size: 15px;
+  color: var(--primary-h);
+}
+
+.mode-toggle {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+  font-size: 12px;
+  background: var(--surface-2);
+}
+.mode-btn {
+  padding: 4px 10px;
+  background: transparent;
+  color: var(--text-dim);
+  border: none;
+  cursor: pointer;
+  font-size: 12px;
+  transition: background 0.15s, color 0.15s;
+}
+.mode-btn:hover {
+  color: var(--text);
+}
+.mode-btn.active {
+  background: var(--primary, #0d6efd);
+  color: #fff;
+  font-weight: 600;
+}
+
+/* === 游標 overlay（蓋在 chart canvas 上） === */
+
+.cursor-overlay {
+  position: absolute;
+  inset: 8px;
+  pointer-events: none;        /* 預設不擋滑鼠，避免擋到 canvas 互動 */
+}
+.cursor-overlay.active {
+  pointer-events: none;
+}
+.cursor-range {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(255, 235, 59, 0.12);
+  pointer-events: none;
+  z-index: 1;
+}
+.cursor-bar {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  pointer-events: auto;        /* 讓游標線可拖曳 */
+  cursor: ew-resize;
+  z-index: 2;
+  user-select: none;
+  touch-action: none;
+}
+.cursor-left  { background: #28a745; box-shadow: 0 0 0 1px rgba(255,255,255,0.5); }
+.cursor-right { background: #dc3545; box-shadow: 0 0 0 1px rgba(255,255,255,0.5); }
+.cursor-bar:hover { width: 3px; }
+.cursor-time {
+  position: absolute;
+  top: 4px;
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: rgba(0, 0, 0, 0.65);
+  color: #fff;
+  padding: 2px 6px;
+  border-radius: 3px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.cursor-left  .cursor-time { left: 4px; }
+.cursor-right .cursor-time { right: 4px; }
+
+/* === 區間資訊列 === */
+
+.cursor-info {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--text);
+}
+.cursor-info-row {
+  display: flex;
+  gap: 6px;
+  line-height: 1.6;
+}
+.cursor-info-label {
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+#cursorInfoRange {
+  color: var(--text);
+}
+#cursorInfoCoverage {
+  color: var(--text);
+}
+#cursorInfoCoverage.warn {
+  color: #fd7e14;
+  font-weight: 600;
+}
+#cursorInfoCoverage.calculating {
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+/* === 量測模式表格欄位配色 === */
+
+#readoutTable.cursor-mode tbody tr td.cell-avg,
+#readoutTable.cursor-mode tbody tr td.cell-max,
+#readoutTable.cursor-mode tbody tr td.cell-min {
+  color: #0d6efd;
+  font-weight: 500;
+}
