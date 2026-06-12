@@ -184,13 +184,25 @@ def cursor_coverage(station: str, t1: str, t2: str):
 - 每次拖曳都要打 API（200~500ms 延遲）— 需 debounce 300ms
 - 多一個 endpoint、多一點後端負擔
 
-#### 採用方案：**B（後端 SQLite 查詢）** ✓
+#### ~~採用方案：B（後端 SQLite 查詢）~~ → **最終未實作**（v6.1.3）
 
-- **理由**：使用者需要精準反映斷線，LTTB 推算誤差 ±10% 不可接受
-- **副作用**：每次拖曳都打 API，必須加 debounce
-- **debounce 設計**：300ms（拖曳結束後 0.3 秒才打 API，連續拖曳時只送最後一次）
+**最終決策（v6.1.3，2026-06-12）：移除「資料覆蓋」整個功能**
 
-#### B 方案 debounce 實作
+- **觸發事件**：在 OTA 端實測發現，拖曳游標線在斷線區間內移動時，「資料覆蓋：xx 筆 / 預期 yy 筆 (zz%)」的數字會跳動（實際筆數變動小、預期筆數變動大），使用者誤以為資料有問題。
+- **使用者決策**：若不影響計算的正確性，可以移除不用顯示。
+- **結果**：
+  - 不論方案 A（前端 LTTB 推算）還是方案 B（後端 SQLite 查詢）都沒實作。
+  - UI 拿掉「資料覆蓋」那行。
+  - 後端 `/api/cursor/coverage` 與 `storage.query_count_in_range` 也一併移除。
+  - 平均/最大/最小仍然純前端計算（永遠是 LTTB 後的資料點，不反映原始 SQLite 筆數），與 v6 avg 原則一致。
+
+#### 為什麼採用 SQLite 方案 B 也不夠好
+
+即使選 B（精準反映 SQLite 筆數），仍有兩個語意問題：
+1. **預期筆數 = 區間秒數 / poll 週期**，會隨區間長度成比例縮放；當 actual 變動不大時，pct 會跳。
+2. **拖曳互動的本質是「使用者選的範圍」**，與其給一個「覆蓋率」指標不如直接讓使用者看圖。
+
+#### B 方案 debounce 實作（保留作歷史記錄，未使用）
 
 ```javascript
 let coverageTimer = null;
@@ -206,18 +218,11 @@ function requestCoverage(station, tsLeft, tsRight) {
 }
 ```
 
-- 拖曳中：游標線即時移動（不需打 API，本地計算平均/最大/最小）
-- 拖曳停止 0.3 秒後：打 API 更新覆蓋率
-- 表格上的「平均/最大/最小」純前端計算，**始終即時**（不 debounce）
-- 只有「資料覆蓋」那一行會延遲 0.3 秒，使用者體感幾乎無感
-
 ---
 
-## 待裁示問題（2026-06-12）
+## ~~待裁示問題（2026-06-12）~~ 已解決
 
-1. **斷線覆蓋率計算方式：A 還是 B？**
-   - A：前端 LTTB 推算（不精準、零延遲）
-   - B：後端 SQLite 查詢（精準、需 debounce）
+1. ~~**斷線覆蓋率計算方式：A 還是 B？**~~ **已解除**：v6.1.3 移除「資料覆蓋」功能，不論 A 或 B 都不實作。
 
 ---
 
@@ -266,8 +271,8 @@ function requestCoverage(station, tsLeft, tsRight) {
 | `templates/index.html` | 加 toggle button 群組、表格欄位動態切換（用 JS 改 DOM 即可，不必重繪 template） | 小 |
 | `static/js/main.js` | 加 `setCursorMode()`、`setupCursorDrag()`、`summarize()` 函式；圖表初始化加 annotation plugin 設定 | 中 |
 | `static/css/style.css` | toggle button active 樣式、量測模式欄位顏色、游標線時間標籤 | 小 |
-| `app.py` | 新增 `GET /api/cursor/coverage` endpoint（SQLite COUNT 查詢） | 小 |
-| `config/settings.json` | 不動（讀既有 `poll_interval_sec`） | 無 |
+| `app.py` | ~~新增 `GET /api/cursor/coverage` endpoint~~（v6.1.3 移除） | ~~小~~ |
+| `config/settings.json` | 不動 | 無 |
 | `templates/settings.html` | 不動 | 無 |
 | `config/settings.json` | 不動 | 無 |
 | `docs/CURSOR_MODE.md` | 本文件 | — |
@@ -275,8 +280,8 @@ function requestCoverage(station, tsLeft, tsRight) {
 ### 5.1 預估工作量
 
 - HTML/CSS：~30 行
-- JS（toggle + 拖曳 + 計算 + debounce + 覆蓋率更新）：~180 行
-- app.py（新增 coverage endpoint）：~30 行
+- JS（toggle + 拖曳 + 計算 + 覆蓋率更新）：~180 行
+- app.py（~~新增 coverage endpoint~~ v6.1.3 移除後不動）
 - 測試：~45 分鐘
 - 總計：3~4 小時
 
@@ -349,9 +354,8 @@ function requestCoverage(station, tsLeft, tsRight) {
 - **日期**：2026-06-12
 
 ### 決策 6：斷線覆蓋率計算方式
-- **選擇**：**B（後端 SQLite 查詢）**
-- **理由**：使用者決策 #3 要求精準反映斷線；LTTB 推算誤差 ±10% 不可接受
-- **副作用與隱藏**：拖曳中表格平均/最大/最小即時更新，覆蓋率用 300ms debounce 延遲更新
+- **選擇**：~~B（後端 SQLite 查詢）~~ → **最終未實作，v6.1.3 移除**
+- **理由（v6.1.3 修訂）**：拖曳游標時「資料覆蓋」指標會跳動造成誤判；使用者決策移除該功能
 - **日期**：2026-06-12
 
 ### 決策 7：是否保留「計算」按鈕
@@ -369,7 +373,7 @@ function requestCoverage(station, tsLeft, tsRight) {
 
 ### 先決問題（不解決不能實作）
 
-- ~~A. 斷線覆蓋率：前端 LTTB 推算 還是 後端 SQLite 查詢？~~ **已裁示：方案 B**
+- ~~A. 斷線覆蓋率：前端 LTTB 推算 還是 後端 SQLite 查詢？~~ **已解除（v6.1.3 移除該功能）**
 - ~~B. 即時狀態下是否仍顯示游標線？~~ **已裁示：完全不顯示**
 - ~~C. 切換工位是否回到即時狀態？~~ **已裁示：是**
 - ~~D. 「計算」按鈕拿掉？~~ **已裁示：是**
