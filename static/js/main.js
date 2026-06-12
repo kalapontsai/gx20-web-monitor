@@ -776,13 +776,19 @@ function initCursorMode() {
   document.getElementById("modeLiveBtn").addEventListener("click", () => setCursorMode("live"));
   document.getElementById("modeCursorBtn").addEventListener("click", () => setCursorMode("cursor"));
 
-  // 切換工位時 → 強制回 live
+  // 切換工位時 → 強制回 live，並重置游標時間戳記（下次進量測模式時重算位置）
   document.getElementById("stationSelect").addEventListener("change", () => {
+    cursorState.tsLeft = null;
+    cursorState.tsRight = null;
     setCursorMode("live");
   });
 
   // 切換 X 軸時 → 游標線重置（但模式保留）
   document.getElementById("chartXSel").addEventListener("change", () => {
+    // 不論當前是哪個模式，都把舊的時間戳記清掉
+    // 避免下次進量測模式時拿舊工位/舊 X 軸的 ts 推算位置（會跑到螢幕外）
+    cursorState.tsLeft = null;
+    cursorState.tsRight = null;
     if (cursorState.mode === "cursor") {
       resetCursorPositions();
     }
@@ -854,8 +860,9 @@ function resetCursorPositions() {
   const max = xScale.max;
   if (min == null || max == null || max <= min) return;
   const span = max - min;
-  cursorState.tsLeft  = new Date(min + span * 0.25);
-  cursorState.tsRight = new Date(min + span * 0.75);
+  // v6.1 fix: 游標線預設放在 1/3 / 2/3 位置，確保在 X 軸可見範圍內
+  cursorState.tsLeft  = new Date(min + span * (1/3));
+  cursorState.tsRight = new Date(min + span * (2/3));
   layoutCursorBars();
   updateCursorInfo();
 }
