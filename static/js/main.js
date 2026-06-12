@@ -944,6 +944,7 @@ function bindCursorDrag(id) {
       cursorState.tsRight = newTs;
     }
     layoutCursorBars();
+    updateCursorInfo();           // v6.1.2: 拖曳時同步更新「區間」資訊
     updateReadoutFromCursor();
     scheduleCoverageRequest();
   };
