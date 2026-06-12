@@ -61,8 +61,7 @@
       ch_color:      sess.ch_color,
       gx20_host:     sess.gx20_host,
       gx20_port:     sess.gx20_port,
-      y_axis_min:    sess.y_axis_min,
-      y_axis_max:    sess.y_axis_max,
+      y_axis:        sess.y_axis,            // v6：per-station
       rate_window_min: sess.rate_window_min,
       avg_window_min:  sess.avg_window_min,
       retention_days:  sess.retention_days,
@@ -169,8 +168,7 @@
       const payload = {
         gx20_host:      this.settings.gx20_host,
         gx20_port:      this.settings.gx20_port,
-        y_axis_min:     this.settings.y_axis_min,
-        y_axis_max:     this.settings.y_axis_max,
+        y_axis:         this.settings.y_axis,        // v6：per-station
         rate_window_min: this.settings.rate_window_min,
         avg_window_min:  this.settings.avg_window_min,
         retention_days: this.settings.retention_days,
@@ -195,8 +193,7 @@
       this.sess.ch_color       = payload.ch_color;
       this.sess.gx20_host      = payload.gx20_host;
       this.sess.gx20_port      = payload.gx20_port;
-      this.sess.y_axis_min     = payload.y_axis_min;
-      this.sess.y_axis_max     = payload.y_axis_max;
+      this.sess.y_axis         = payload.y_axis;     // v6
       this.sess.rate_window_min = payload.rate_window_min;
       this.sess.avg_window_min  = payload.avg_window_min;
       this.sess.retention_days  = payload.retention_days;
@@ -210,8 +207,7 @@
         ch_color:      payload.ch_color,
         gx20_host:     payload.gx20_host,
         gx20_port:     payload.gx20_port,
-        y_axis_min:    payload.y_axis_min,
-        y_axis_max:    payload.y_axis_max,
+        y_axis:        payload.y_axis,             // v6
         rate_window_min: payload.rate_window_min,
         avg_window_min:  payload.avg_window_min,
         retention_days:  payload.retention_days,

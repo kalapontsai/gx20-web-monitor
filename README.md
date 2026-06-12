@@ -846,7 +846,7 @@ https://skemman.is/handle/1946/15343
 
 | 角色 | 主機 | 工作目錄 | 同步方式 |
 |------|------|----------|----------|
-| 開發端 | WSL（PCXSSDl） | `<DEV_PATH>\` | 二寶改檔的起點 |
+| 開發端 | WSL（PCXSSDl） | `D:\OneDrive - Sampo Corporation\3.Data\5.Python\gx20-web-monitor\` | 二寶改檔的起點 |
 | 部署端 | Windows <DEPLOY_HOST> | `<DEPLOY_PATH>\` | 跑 python app.py |
 | 同步通道 | **OTA**（HTTP） | `POST /api/admin/*` 帶 `X-OTA-Token` header | 兩端都是 Windows 跑 Python，但**沒有** OneDrive 同步 |
 
@@ -1145,7 +1145,7 @@ v4 系列 bug 修完後，原本提的三大需求進入實作階段。
 
 | 角色 | 主機 | 路徑 | 備註 |
 |------|------|------|------|
-| 開發端 | WSL (PCXSSDl) | `<DEV_PATH>` | 二寶改檔的起點 |
+| 開發端 | WSL (PCXSSDl) | `D:\OneDrive - Sampo Corporation\3.Data\5.Python\gx20-web-monitor` | 二寶改檔的起點 |
 | 部署端 | Windows <DEPLOY_HOST> | `<DEPLOY_PATH>` | 跑 python app.py |
 | 同步通道 | OTA（HTTP） | `POST /api/admin/*` 帶 `X-OTA-Token` header | 兩端都是 Windows 跑 Python，但沒 OneDrive 同步 |
 

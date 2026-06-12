@@ -230,6 +230,9 @@ def insert_sample(ts: str, station: str, temps: List[Optional[float]]) -> None:
     """寫入一筆取樣（temps 必須長度 20；None 視為 NULL）。"""
     assert len(temps) == 20, f"temps 長度必須為 20，收到 {len(temps)}"
     assert station in _stations(), f"未知工位: {station}"
+    # 註：必須在 _conn_samples 之前補 schema。若 DB 檔剛被刪除（clear_station_db 後），
+    # 不建表寫入會跳 "no such table: samples" → 整個 round 死掉。
+    _ensure_samples_table(station)
     cols = "ts, station, " + ", ".join(f"t{i:02d}" for i in range(1, 21))
     placeholders = "?, ?, " + ", ".join("?" for _ in range(20))
     sql = f"INSERT INTO samples ({cols}) VALUES ({placeholders})"

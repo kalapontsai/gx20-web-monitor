@@ -36,10 +36,12 @@ async function init() {
   // 填入基本欄位
   document.getElementById("gx20_host").value        = settings.gx20_host;
   document.getElementById("gx20_port").value        = settings.gx20_port;
-  document.getElementById("y_axis_min").value       = settings.y_axis_min;
-  document.getElementById("y_axis_max").value       = settings.y_axis_max;
   document.getElementById("retention_days").value   = settings.retention_days;
   document.getElementById("max_points").value       = settings.max_points;
+
+  // v6：Y 軸範圍 per-station。預設填入當前站位
+  renderYAxisTabs();
+  fillYAxisFields(currentStation);
 
   // 從 server 額外拉 debug flag（GX20State 不會自動合併，獨立處理）
   try {
@@ -53,10 +55,11 @@ async function init() {
   // 基本欄位 → GX20State.update
   bindField("gx20_host",       (v) => GX20State.update("gx20_host", v));
   bindField("gx20_port",       (v) => GX20State.update("gx20_port", parseInt(v, 10) || 0));
-  bindField("y_axis_min",      (v) => GX20State.update("y_axis_min", parseFloat(v) || 0));
-  bindField("y_axis_max",      (v) => GX20State.update("y_axis_max", parseFloat(v) || 0));
   bindField("retention_days",  (v) => GX20State.update("retention_days", Math.max(1, Math.min(30, parseInt(v, 10) || 7))));
   bindField("max_points",      (v) => GX20State.update("max_points", Math.max(200, Math.min(10000, parseInt(v, 10) || 2000))));
+
+  // v6：Y 軸三欄位綁定到「目前站位」的 y_axis entry
+  bindYAxisFields();
 
   // Debug log 切換 → 直接 POST /api/debug（不透過 GX20State）
   document.getElementById("debugLogEnabled").addEventListener("change", async (e) => {
@@ -247,6 +250,93 @@ function syncAllToggleFromGrid() {
   const tog = document.getElementById("allToggle");
   tog.checked = allOn;
   tog.indeterminate = !allOn && !allOff;
+}
+
+// =============================================================
+// v6：Y 軸範圍 per-station 處理
+//   - renderYAxisTabs()      造出六個站位 tab
+//   - fillYAxisFields(st)    從 settings.y_axis[st] 把值填到三個欄位
+//   - bindYAxisFields()      註 input/change 監聽 → 寫回 GX20State
+//   - 勾「動態縮放」時 min/max 變半透明 (disabled 概念)
+// =============================================================
+
+function renderYAxisTabs() {
+  const tabs = document.getElementById("yAxisStationTabs");
+  if (!tabs) return;
+  tabs.innerHTML = "";
+  STATIONS.forEach(s => {
+    const b = document.createElement("button");
+    b.textContent = s;
+    b.dataset.station = s;
+    if (s === currentStation) b.classList.add("active");
+    b.addEventListener("click", () => {
+      currentStation = s;
+      saveTabExtra({ currentStation: s });
+      tabs.querySelectorAll("button").forEach(x => x.classList.toggle("active", x.dataset.station === s));
+      fillYAxisFields(s);
+      // 切站也要重畫接點 grid（让 Y 軸 tab 跟接點 tab 同步，兩者共高 currentStation）
+      // 但接點 tab 是在 #stationTabs 內造出來的，必須同步選中狀態
+      const chTabs = document.getElementById("stationTabs");
+      if (chTabs) {
+        chTabs.querySelectorAll("button").forEach(x => x.classList.toggle("active", x.dataset.station === s));
+      }
+      renderChGrid();
+      syncAllToggleFromGrid();
+    });
+    tabs.appendChild(b);
+  });
+}
+
+function fillYAxisFields(st) {
+  const settings = GX20State.settings;
+  const entry = (settings.y_axis && settings.y_axis[st]) || { min: 0, max: 100, auto: false };
+  const minEl = document.querySelector('[data-yaxis-field="min"]');
+  const maxEl = document.querySelector('[data-yaxis-field="max"]');
+  const autoEl = document.querySelector('[data-yaxis-field="auto"]');
+  if (!minEl || !maxEl || !autoEl) return;
+  minEl.value  = entry.min;
+  maxEl.value  = entry.max;
+  autoEl.checked = !!entry.auto;
+  applyYAxisAutoState(autoEl.checked);
+}
+
+function applyYAxisAutoState(isAuto) {
+  const minEl = document.querySelector('[data-yaxis-field="min"]');
+  const maxEl = document.querySelector('[data-yaxis-field="max"]');
+  if (!minEl || !maxEl) return;
+  // 動態縮放啟用時，min/max 變半透明、不能輸入
+  minEl.disabled = isAuto;
+  maxEl.disabled = isAuto;
+  minEl.style.opacity = isAuto ? "0.5" : "1";
+  maxEl.style.opacity = isAuto ? "0.5" : "1";
+}
+
+function bindYAxisFields() {
+  const minEl  = document.querySelector('[data-yaxis-field="min"]');
+  const maxEl  = document.querySelector('[data-yaxis-field="max"]');
+  const autoEl = document.querySelector('[data-yaxis-field="auto"]');
+  if (!minEl || !maxEl || !autoEl) return;
+
+  // 共用寫回函式：取得整個 y_axis 物件，改一站位，再 update
+  const writeBack = (patch) => {
+    const s = GX20State.settings;
+    if (!s.y_axis) s.y_axis = {};
+    if (!s.y_axis[currentStation]) {
+      s.y_axis[currentStation] = { min: 0, max: 100, auto: false };
+    }
+    Object.assign(s.y_axis[currentStation], patch);
+    GX20State.update("y_axis", s.y_axis);
+  };
+
+  minEl.addEventListener("input",  () => writeBack({ min: parseFloat(minEl.value) || 0 }));
+  minEl.addEventListener("change", () => writeBack({ min: parseFloat(minEl.value) || 0 }));
+  maxEl.addEventListener("input",  () => writeBack({ max: parseFloat(maxEl.value) || 0 }));
+  maxEl.addEventListener("change", () => writeBack({ max: parseFloat(maxEl.value) || 0 }));
+  autoEl.addEventListener("change", () => {
+    const isAuto = autoEl.checked;
+    applyYAxisAutoState(isAuto);
+    writeBack({ auto: isAuto });
+  });
 }
 
 window.addEventListener("DOMContentLoaded", init);

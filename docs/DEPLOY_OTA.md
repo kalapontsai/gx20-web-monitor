@@ -1,6 +1,6 @@
 # 部署 + OTA 使用手冊
 
-> 對象：<DEPLOY_PATH_OLD>\（<DEPLOY_HOST> 部署端）
+> 對象：<DEPLOY_PATH>0610\（<DEPLOY_HOST> 部署端）
 > 維護者：二寶（agent）
 > 設計：本地無 OneDrive，部署端與開發端用 OTA 通道同步
 
@@ -10,8 +10,8 @@
 
 | 角色 | 主機 | 工作目錄 | 備註 |
 |---|---|---|---|
-| 開發 | WSL (D:\OneDrive\...) | <DEV_PATH>\ | 我改檔的起點 |
-| 部署 | Windows <DEPLOY_HOST> | <DEPLOY_PATH_OLD>\ | 跑 python app.py |
+| 開發 | WSL (D:\OneDrive\...) | D:\OneDrive - Sampo Corporation\3.Data\5.Python\gx20-web-monitor\ | 我改檔的起點 |
+| 部署 | Windows <DEPLOY_HOST> | <DEPLOY_PATH>0610\ | 跑 python app.py |
 | 同步通道 | **OTA** | HTTP POST /api/admin/* | 帶 token 認證 |
 
 ---
@@ -26,7 +26,7 @@
 
 ### 1.2 複製檔案
 
-把開發端這 6 個檔案覆蓋到部署端 `<DEPLOY_PATH_OLD>\`：
+把開發端這 6 個檔案覆蓋到部署端 `<DEPLOY_PATH>0610\`：
 
 ```
 app.py
@@ -41,12 +41,12 @@ storage.py          ← 沒改，但一併同步確保版本一致
 
 ```cmd
 :: 假設開發端路徑可達（透過網路芳鄰 / share），否則由大大用隨身碟 / OneDrive 手動搬
-copy /Y "\\<WSL_HOST>\<DEV_PATH>\app.py"       "<DEPLOY_PATH_OLD>\app.py"
-copy /Y "\\<WSL_HOST>\<DEV_PATH>\config.py"    "<DEPLOY_PATH_OLD>\config.py"
-copy /Y "\\<WSL_HOST>\<DEV_PATH>\ota.py"      "<DEPLOY_PATH_OLD>\ota.py"
-copy /Y "\\<WSL_HOST>\<DEV_PATH>\ota_push.py" "<DEPLOY_PATH_OLD>\ota_push.py"
-copy /Y "\\<WSL_HOST>\<DEV_PATH>\ota_watchdog.bat" "<DEPLOY_PATH_OLD>\ota_watchdog.bat"
-copy /Y "\\<WSL_HOST>\<DEV_PATH>\storage.py"  "<DEPLOY_PATH_OLD>\storage.py"
+copy /Y "<LOCAL_PROJECT_ROOT>\app.py"       "<DEPLOY_PATH>0610\app.py"
+copy /Y "<LOCAL_PROJECT_ROOT>\config.py"    "<DEPLOY_PATH>0610\config.py"
+copy /Y "<LOCAL_PROJECT_ROOT>\ota.py"      "<DEPLOY_PATH>0610\ota.py"
+copy /Y "<LOCAL_PROJECT_ROOT>\ota_push.py" "<DEPLOY_PATH>0610\ota_push.py"
+copy /Y "<LOCAL_PROJECT_ROOT>\ota_watchdog.bat" "<DEPLOY_PATH>0610\ota_watchdog.bat"
+copy /Y "<LOCAL_PROJECT_ROOT>\storage.py"  "<DEPLOY_PATH>0610\storage.py"
 ```
 
 > 若 WSL 路徑無法直接存取，就用隨身碟 / OneDrive 同步後手動 copy。
@@ -57,13 +57,13 @@ copy /Y "\\<WSL_HOST>\<DEV_PATH>\storage.py"  "<DEPLOY_PATH_OLD>\storage.py"
 v4 前端修正在 `static/js/main.js`，需要確認部署端有最新版。如果沒有，把開發端的 `static/js/main.js` 也覆蓋過去：
 
 ```cmd
-copy /Y "X:\path\static\js\main.js"  "<DEPLOY_PATH_OLD>\static\js\main.js"
+copy /Y "X:\path\static\js\main.js"  "<DEPLOY_PATH>0610\static\js\main.js"
 ```
 
 ### 1.4 啟動 v4（用 watch dog 包住）
 
 ```cmd
-cd <DEPLOY_PATH_OLD>
+cd <DEPLOY_PATH>0610
 ota_watchdog.bat
 ```
 
@@ -71,17 +71,17 @@ ota_watchdog.bat
 
 ### 1.5 拿回 OTA token
 
-Flask 第一次啟動時，OTA 模組會自動產生 token 寫到 `<DEPLOY_PATH_OLD>\config\ota_token`。
+Flask 第一次啟動時，OTA 模組會自動產生 token 寫到 `<DEPLOY_PATH>0610\config\ota_token`。
 
 ```cmd
-type <DEPLOY_PATH_OLD>\config\ota_token
+type <DEPLOY_PATH>0610\config\ota_token
 ```
 
 把這串 token **私訊給二寶**（我）。我會寫到開發端的 `config/ota_token`，之後 `ota_push.py` 就能用它推檔。
 
 > ⚠ **Token 不可用 Telegram 明文傳**（雖說是授權頻道，但怕被截圖/匯出）。建議用以下任一管道：
 > - 直接登入 <DEPLOY_HOST> 跑 `type` 命令時螢幕截圖（token 自己看）
-> - 或把 token 寫到 `<DEPLOY_PATH_OLD>\ota_token_sync.txt`，**只允許我透過 OTA 通道讀取**
+> - 或把 token 寫到 `<DEPLOY_PATH>0610\ota_token_sync.txt`，**只允許我透過 OTA 通道讀取**
 >
 > **務實方案**：我直接做「OTA 推檔時自動從部署端抓 token」流程（見 §3.3 進階）
 
@@ -99,7 +99,7 @@ python3 ota_push.py status http://<DEPLOY_HOST>:5000
   "ota_version": 1,
   "token_source": "file",
   "token_fingerprint": "xxxxxxxx",
-  "app_root": "<DEPLOY_PATH_OLD>",
+  "app_root": "<DEPLOY_PATH>",
   ...
 }
 ```

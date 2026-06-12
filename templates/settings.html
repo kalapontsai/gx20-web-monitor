@@ -34,18 +34,27 @@
     </div>
   </div>
 
-  <!-- ====== 2. Y 軸範圍 ====== -->
-  <h2>2. Y 軸範圍</h2>
+  <!-- ====== 2. Y 軸範圍（v6：per-station 設定）====== -->
+  <h2>2. Y 軸範圍 <span style="font-size:12px; color: var(--text-mute);">（每工位各自一組）</span></h2>
   <div class="card">
+    <div class="station-tabs" id="yAxisStationTabs"></div>
     <div class="row">
       <label>最小值 (°C)</label>
-      <input type="number" id="y_axis_min" value="-20" step="1">
+      <input type="number" id="y_axis_min" value="-20" step="1" data-yaxis-field="min">
     </div>
     <div class="row">
       <label>最大值 (°C)</label>
-      <input type="number" id="y_axis_max" value="100" step="1">
+      <input type="number" id="y_axis_max" value="100" step="1" data-yaxis-field="max">
+    </div>
+    <div class="row">
+      <label>動態縮放</label>
+      <label class="all-toggle-label">
+        <input type="checkbox" id="y_axis_auto" data-yaxis-field="auto">
+        <span>勾選後由 Chart.js 依資料自動決定 Y 軸範圍（忽略上下限）</span>
+      </label>
     </div>
     <p style="color: var(--text-mute); font-size: 12px; margin: 4px 0 0;">
+      ※ 切換上方工位 tab 即可設定不同工位的 Y 軸。
       ※ 歷史視窗/時間範圍請至主畫面右側「最新讀值」區塊的 X 軸選單控制。
     </p>
   </div>

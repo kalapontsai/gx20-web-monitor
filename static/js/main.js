@@ -256,6 +256,7 @@ async function switchStation(newStation) {
   // 先清空右側表格並重畫 chart（避免殘留上一站資料的視覺）
   updateReadoutTable(null);
   rebuildChart();
+  // v6：rebuildChart() 內已經會用新站位的 y_axis 套 Y 軸
   await loadHistory(myGen);
   // loadHistory 內部會自己檢查世代號
   // 關鍵修正：loadHistory 拉完歷史後，右側「最新讀值」表格依賴 socket
@@ -324,6 +325,42 @@ async function patchSettingAndApply(key, value, which) {
 
 // ---------- Chart ----------
 
+/**
+ * v6：取得「目前站位」的 Y 軸設定。
+ * 回傳 { min, max, auto }。
+ * 讀不到就退到全域預設。
+ */
+function getYAxisForCurrent() {
+  const s = GX20State.settings;
+  const yAxis = (s && s.y_axis) || {};
+  const entry = yAxis[currentStation];
+  if (entry && typeof entry === "object") {
+    return {
+      min:  Number(entry.min),
+      max:  Number(entry.max),
+      auto: !!entry.auto,
+    };
+  }
+  return { min: -20, max: 100, auto: false };
+}
+
+/**
+ * 將目前站位的 Y 軸設定套進 chart.options.scales.y。
+ * auto=true → 不設 min/max（讓 Chart.js 自動決定）
+ * auto=false → 設 min/max 鎖住範圍
+ */
+function applyYAxisToChart() {
+  if (!chart) return;
+  const { min, max, auto } = getYAxisForCurrent();
+  if (auto) {
+    delete chart.options.scales.y.min;
+    delete chart.options.scales.y.max;
+  } else {
+    if (Number.isFinite(min)) chart.options.scales.y.min = min;
+    if (Number.isFinite(max)) chart.options.scales.y.max = max;
+  }
+}
+
 // 圖表軸 / 格線 / 文字色，根據當前主題切換
 function chartColors() {
   const cs = getComputedStyle(document.body);
@@ -366,8 +403,8 @@ function buildChart() {
     chart = null;
   }
   const c = chartColors();
-  const yMin = parseFloat(settings.y_axis_min);
-  const yMax = parseFloat(settings.y_axis_max);
+  // v6：Y 軸範圍改為 per-station 結構，這裡不再讀 y_axis_min/max
+  // （applyYAxisToChart() 會在 chart 建好後處理）
   const xMin = Number(settings.chart_x_minutes) || 0;
 
   const xScale = {
@@ -411,12 +448,14 @@ function buildChart() {
           ticks: { color: c.text },
           grid:  { color: c.grid },
           title: { display: true, text: "溫度 (°C)", color: c.text },
-          ...(Number.isFinite(yMin) ? { min: yMin } : {}),
-          ...(Number.isFinite(yMax) ? { max: yMax } : {}),
+          // v6：Y 軸 per-station。這裡不再硬編 yMin/yMax，改在 build 後 applyYAxisToChart() 決定。
         },
       },
     },
   });
+
+  // v6：依「目前站位」y_axis 設定套 min/max
+  applyYAxisToChart();
 
   // 重要：建好後立即把 min/max 寫進 chart.options（Chart.js time scale 只看這個）
   if (xMin > 0) {

@@ -214,12 +214,16 @@ state = {
 # ---------- 設定讀寫輔助 ----------
 
 def load_settings() -> dict:
-    """合併 SQLite 設定與預設值（缺項用預設補）。"""
+    """合併 SQLite 設定與預設值（缺項用預設補）。
+
+    v6：Y 軸範圍改為 per-station 結構 y_axis = {station: {min, max, auto}}。
+    舊的全域 y_axis_min / y_axis_max 已停用，讀到就忽略（不向下相容）。
+    """
     raw = storage.get_all_settings()
     defaults = config.default_settings()
     out = dict(defaults)
 
-    for k in ("gx20_host", "gx20_port", "y_axis_min", "y_axis_max",
+    for k in ("gx20_host", "gx20_port",
               "rate_window_min", "avg_window_min",
               "retention_days", "max_points", "chart_x_minutes"):
         if k in raw:
@@ -228,14 +232,29 @@ def load_settings() -> dict:
                     "gx20_port", "rate_window_min", "avg_window_min",
                     "history_minutes", "retention_days", "max_points",
                     "chart_x_minutes"
-                ) else (
-                    float(raw[k]) if k in ("y_axis_min", "y_axis_max") else raw[k]
-                )
+                ) else raw[k]
             except (TypeError, ValueError):
                 pass
 
     if "theme" in raw and raw["theme"] in ("light", "dark"):
         out["theme"] = raw["theme"]
+
+    # v6：y_axis 為 per-station dict，每站位是 {min, max, auto}
+    y_axis_raw = config.from_json(raw.get("y_axis"), default=defaults["y_axis"])
+    if isinstance(y_axis_raw, dict):
+        merged = dict(defaults["y_axis"])
+        for st in STATIONS:
+            entry = y_axis_raw.get(st)
+            if not isinstance(entry, dict):
+                continue
+            try:
+                merged[st]["min"]  = float(entry.get("min", defaults["y_axis"][st]["min"]))
+                merged[st]["max"]  = float(entry.get("max", defaults["y_axis"][st]["max"]))
+                merged[st]["auto"] = bool(entry.get("auto", defaults["y_axis"][st]["auto"]))
+            except (TypeError, ValueError):
+                # 內容型別錯誤就保留預設
+                pass
+        out["y_axis"] = merged
 
     for k in ("ch_visibility", "ch_alias", "ch_color"):
         v = config.from_json(raw.get(k), default=defaults[k])
@@ -251,7 +270,24 @@ def load_settings() -> dict:
 
 def save_settings(patch: dict) -> None:
     for k, v in patch.items():
-        if k in ("ch_visibility", "ch_alias", "ch_color") and isinstance(v, dict):
+        # v6：y_axis 為 per-station dict，每站位是 {min, max, auto}，以工位為單位 merge
+        if k == "y_axis" and isinstance(v, dict):
+            existing_raw = storage.get_setting("y_axis")
+            existing = config.from_json(existing_raw, default=config.default_settings()["y_axis"])
+            if not isinstance(existing, dict):
+                existing = config.default_settings()["y_axis"]
+            for st, val in v.items():
+                if st in STATIONS and isinstance(val, dict):
+                    # 取現有該工位的值，patch 覆蓋，缺項用預設
+                    cur_st = existing.get(st) or config.default_settings()["y_axis"][st]
+                    if not isinstance(cur_st, dict):
+                        cur_st = config.default_settings()["y_axis"][st]
+                    new_st = dict(cur_st)
+                    for sk, sv in val.items():
+                        new_st[sk] = sv
+                    existing[st] = new_st
+            storage.set_setting("y_axis", config.to_json(existing))
+        elif k in ("ch_visibility", "ch_alias", "ch_color") and isinstance(v, dict):
             existing_raw = storage.get_setting(k)
             existing = config.from_json(existing_raw, default=config.default_settings()[k])
             if not isinstance(existing, dict):
@@ -417,29 +453,38 @@ def poller() -> None:
                 state["connected"]  = True
 
             # 寫 SQLite + 更新 ring buffer
+            # 隔離每個工位：一個工位 DB 損壞不連累其他工位
             for station, temps in data.items():
-                storage.insert_sample(ts, station, temps)
-                state["ring"][station].append((ts, list(temps)))
-                log.debug("[round #%d] %s 寫入 SQLite 成功，ring size=%d, temps=%s",
-                          round_no, station, len(state["ring"][station]), _fmt_temps(temps))
+                try:
+                    storage.insert_sample(ts, station, temps)
+                    state["ring"][station].append((ts, list(temps)))
+                    log.debug("[round #%d] %s 寫入 SQLite 成功，ring size=%d, temps=%s",
+                              round_no, station, len(state["ring"][station]), _fmt_temps(temps))
+                except Exception as e:
+                    log.warning("[round #%d] %s 寫入 SQLite 失敗（不連累其他工位）: %s",
+                                round_no, station, e)
 
             # 計算 rate / avg（用 ring buffer，不再查 DB）
             rate_window = int(s["rate_window_min"])
             avg_window  = int(s["avg_window_min"])
 
             for station, temps in data.items():
-                rates = [compute_rate_from_ring(station, rate_window, i) for i in range(20)]
-                avgs  = [compute_avg_from_ring(station, avg_window, i)  for i in range(20)]
-                payload = {
-                    "ts":      ts,
-                    "station": station,
-                    "temps":   temps,
-                    "rate":    rates,
-                    "avg":     avgs,
-                }
-                socketio.emit("new_sample", payload)
-                log.debug("[round #%d] %s emit new_sample rate=%s avg=%s",
-                          round_no, station, _fmt_rates(rates), _fmt_rates(avgs))
+                try:
+                    rates = [compute_rate_from_ring(station, rate_window, i) for i in range(20)]
+                    avgs  = [compute_avg_from_ring(station, avg_window, i)  for i in range(20)]
+                    payload = {
+                        "ts":      ts,
+                        "station": station,
+                        "temps":   temps,
+                        "rate":    rates,
+                        "avg":     avgs,
+                    }
+                    socketio.emit("new_sample", payload)
+                    log.debug("[round #%d] %s emit new_sample rate=%s avg=%s",
+                              round_no, station, _fmt_rates(rates), _fmt_rates(avgs))
+                except Exception as e:
+                    log.warning("[round #%d] %s 計算/推播失敗（不連累其他工位）: %s",
+                                round_no, station, e)
 
             elapsed_ms = (time.time() - t_start) * 1000
             log.info("[round #%d] OK ts=%s stations=%d elapsed=%.1fms",
@@ -858,6 +903,19 @@ def api_admin_restart():
     delay = max(0, min(delay, 10))
     log.warning("管理員觸發自我重啟（%d 秒後）", delay)
     return jsonify(_ota.schedule_restart(delay_sec=delay))
+
+
+@app.route("/api/admin/clear_log", methods=["POST"])
+def api_admin_clear_log():
+    """
+    清空 logs/app.log 與備份檔（不需重啟）。
+    Header: X-OTA-Token: <token>
+    Body 可省略；保留期實作為「全清」。
+    用途：debug log 開啟前先清，避免前一波資料虛胖。
+    """
+    if not _ota.check_token(request.headers.get("X-OTA-Token")):
+        return jsonify({"ok": False, "error": "invalid or missing token"}), 401
+    return jsonify(_ota.clear_log_file())
 
 
 # ---------- CSV 匯出 ----------

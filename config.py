@@ -15,10 +15,13 @@ POLL_INTERVAL_SEC = 10
 
 # ---------- 圖表 ----------
 # v3：history_minutes 設定已從 UI 移除，改以 chart_x_minutes 為主
+# v6：Y 軸範圍改為 per-station 結構（{工位1: {min, max, auto}, ...}）
+#     舊的全域 y_axis_min / y_axis_max 已停用（不相容）
 DEFAULT_RATE_WINDOW_MIN = 5             # 升降速率計算區間（分鐘）
 DEFAULT_AVG_WINDOW_MIN = 10             # 平均值計算區間（分鐘）
-DEFAULT_Y_MIN = -20                     # Y 軸最小值
-DEFAULT_Y_MAX = 100                     # Y 軸最大值
+DEFAULT_Y_MIN = -20                     # Y 軸預設最小值
+DEFAULT_Y_MAX = 100                     # Y 軸預設最大值
+DEFAULT_Y_AUTO = False                  # 預設動態縮放：False=用 min/max 鎖住，True=讓 Chart.js auto-scale
 DEFAULT_THEME = "light"                 # 預設主題（light/dark）
 DEFAULT_RETENTION_DAYS = 7              # DB 保留天數
 DEFAULT_MAX_POINTS = 2000               # /api/history 降取樣門檻
@@ -41,13 +44,26 @@ def default_color() -> dict:
     return {s: list(DEFAULT_COLORS) for s in STATIONS}
 
 
+def default_y_axis() -> dict:
+    """v6：Y 軸範圍 per-station。結構 = {工位名: {min, max, auto}}。
+    預設每個工位都吃全域 DEFAULT_Y_MIN/MAX，不開自動縮放。"""
+    return {
+        s: {
+            "min":  DEFAULT_Y_MIN,
+            "max":  DEFAULT_Y_MAX,
+            "auto": DEFAULT_Y_AUTO,
+        }
+        for s in STATIONS
+    }
+
+
 # ---------- 預設完整設定 dict（給 settings 頁初始化用） ----------
 def default_settings() -> dict:
     return {
         "gx20_host":      DEFAULT_GX20_HOST,
         "gx20_port":      DEFAULT_GX20_PORT,
-        "y_axis_min":     DEFAULT_Y_MIN,
-        "y_axis_max":     DEFAULT_Y_MAX,
+        # v6：y_axis 為 per-station 結構。舊的 y_axis_min/max 已停用。
+        "y_axis":         default_y_axis(),
         "rate_window_min": DEFAULT_RATE_WINDOW_MIN,
         "avg_window_min":  DEFAULT_AVG_WINDOW_MIN,
         "ch_visibility":  default_visibility(),
@@ -78,8 +94,8 @@ __all__ = [
     "STATIONS", "POINTS_PER_STATION", "CHANNEL_NUMBER",
     "DEFAULT_GX20_HOST", "DEFAULT_GX20_PORT", "POLL_INTERVAL_SEC",
     "DEFAULT_RATE_WINDOW_MIN", "DEFAULT_AVG_WINDOW_MIN",
-    "DEFAULT_Y_MIN", "DEFAULT_Y_MAX",
+    "DEFAULT_Y_MIN", "DEFAULT_Y_MAX", "DEFAULT_Y_AUTO",
     "DEFAULT_THEME", "DEFAULT_RETENTION_DAYS", "DEFAULT_MAX_POINTS", "DEFAULT_CHART_X_MINUTES", "RING_BUFFER_SIZE",
-    "default_visibility", "default_alias", "default_color", "default_settings",
+    "default_visibility", "default_alias", "default_color", "default_y_axis", "default_settings",
     "to_json", "from_json",
 ]

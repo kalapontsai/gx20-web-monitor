@@ -302,3 +302,52 @@ def status() -> dict:
         "allowed_targets_count": len(ALLOWED_TARGETS),
         "uptime_seconds": round(_t.time() - boot, 1),
     }
+
+
+# ============================================================
+# 清 log 檔
+# ============================================================
+
+def clear_log_file() -> dict:
+    """
+    清空 logs/app.log 與所有備份 (app.log.1 ~ app.log.5)。
+    - 不刪檔，只 truncate 到 0 bytes
+    - 不需要 restart（logger 的 file handler 下次 emit 時會自動重新打開）
+    - 用 os.truncate 而非 open('w')：避免在手打開時另一個 fd 還在寫
+    """
+    log_path = os.path.join(APP_ROOT, "logs", "app.log")
+    cleared = []
+    errors = []
+    # 主檔 + 備份 (RotatingFileHandler 備份慣例是 .1 ~ .5)
+    candidates = [log_path] + [f"{log_path}.{i}" for i in range(1, 10)]
+    for p in candidates:
+        if not os.path.exists(p):
+            continue
+        try:
+            with open(p, "ab") as f:
+                size = os.path.getsize(p)
+                # 先 close fh 抓到的大小，再 truncate
+            with open(p, "rb+") as f:
+                f.truncate(0)
+            cleared.append({"path": p, "size_before": size})
+            log.info("clear_log_file: 清空 %s（%d bytes）", p, size)
+        except Exception as e:
+            errors.append({"path": p, "error": str(e)})
+            log.warning("clear_log_file: 清空 %s 失敗: %s", p, e)
+    # 強制讓 root logger 的所有 handler 重設 fd（避免 OS 層 cache）
+    try:
+        import logging as _logging
+        for h in _logging.getLogger().handlers:
+            try:
+                if hasattr(h, "stream") and h.stream and not h.stream.closed:
+                    h.flush()
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return {
+        "ok": len(errors) == 0,
+        "cleared": cleared,
+        "errors": errors,
+        "log_path": log_path,
+    }
