@@ -758,17 +758,14 @@ window.addEventListener("DOMContentLoaded", init);
 //
 // 互動規則：
 //   - 拖曳游標：即時更新平均/最大/最小（純前端，從 chart dataset 取值）
-//   - 拖曳停止 300ms 後：打 /api/cursor/coverage 查實際筆數（debounce）
 //   - 切換工位：強制回 'live'
-//   - 切換 X 軸：游標位置重置為新範圍的 25% / 75%
-
-const CURSOR_DEBOUNCE_MS = 300;
+//   - 切換 X 軸：游標位置重置為新範圍的 1/3 / 2/3
+//   - v6.1.3：移除「資料覆蓋」顯示，删除 scheduleCoverageRequest 與 API 呼叫
 
 const cursorState = {
   mode: 'live',        // 'live' | 'cursor'
   tsLeft:  null,       // Date
   tsRight: null,       // Date
-  coverageTimer: null, // debounce timer id
 };
 
 function initCursorMode() {
@@ -818,11 +815,7 @@ function setCursorMode(mode) {
     document.getElementById("cursorLeft").hidden  = true;
     document.getElementById("cursorRight").hidden = true;
     document.getElementById("cursorRange").hidden = true;
-    // 取消 pending 的 coverage API
-    if (cursorState.coverageTimer) {
-      clearTimeout(cursorState.coverageTimer);
-      cursorState.coverageTimer = null;
-    }
+    // v6.1.3: 移除 coverage timer 相關清理
     // 表格立即恢復即時模式（用當前 payload）
     if (chart && chart._lastPayload) {
       rerenderLiveReadout();
@@ -946,7 +939,7 @@ function bindCursorDrag(id) {
     layoutCursorBars();
     updateCursorInfo();           // v6.1.2: 拖曳時同步更新「區間」資訊
     updateReadoutFromCursor();
-    scheduleCoverageRequest();
+    // v6.1.3: 移除 scheduleCoverageRequest()，不再打 /api/cursor/coverage
   };
   const onUp = (e) => {
     dragging = false;
@@ -1060,11 +1053,7 @@ function updateCursorInfo() {
   const durTxt = _fmtDuration(durSec);
   document.getElementById("cursorInfoRange").textContent =
     `${_fmtTs(tL)} ~ ${_fmtTs(tR)}  (${durTxt})`;
-
-  const cov = document.getElementById("cursorInfoCoverage");
-  cov.textContent = "計算中…";
-  cov.className = "calculating";
-  cov.classList.remove("warn");
+  // v6.1.3: 移除「資料覆蓋」顯示，scheduleCoverageRequest() 不再呼叫
 }
 
 function _fmtDuration(sec) {
@@ -1075,39 +1064,8 @@ function _fmtDuration(sec) {
   return `${h} 時 ${m} 分`;
 }
 
-/**
- * Debounce 300ms 後打 /api/cursor/coverage 更新覆蓋率。
- * 拖曳中不重複打 API，停下 0.3 秒後才送。
- */
-function scheduleCoverageRequest() {
-  if (!currentStation) return;
-  if (cursorState.coverageTimer) {
-    clearTimeout(cursorState.coverageTimer);
-  }
-  cursorState.coverageTimer = setTimeout(async () => {
-    cursorState.coverageTimer = null;
-    const tL = cursorState.tsLeft.toISOString();
-    const tR = cursorState.tsRight.toISOString();
-    const cov = document.getElementById("cursorInfoCoverage");
-    try {
-      const resp = await fetch(`/api/cursor/coverage?station=${encodeURIComponent(currentStation)}&t1=${encodeURIComponent(tL)}&t2=${encodeURIComponent(tR)}`);
-      const j = await resp.json();
-      if (!j.ok) {
-        cov.textContent = "查詢失敗";
-        cov.className = "";
-        cov.classList.add("warn");
-        return;
-      }
-      cov.textContent = `${j.actual} 筆 / 預期 ${j.expected} 筆 (${j.pct}%)`;
-      cov.className = "";
-      if (j.pct < 50) cov.classList.add("warn");
-    } catch (e) {
-      cov.textContent = "查詢失敗";
-      cov.className = "";
-      cov.classList.add("warn");
-    }
-  }, CURSOR_DEBOUNCE_MS);
-}
+// v6.1.3: 移除 scheduleCoverageRequest() 整個函式
+// （不再打 /api/cursor/coverage，相關 coverageTimer 變數也一併清除）
 
 // 游標模式與原 onNewSample / updateReadoutTable 的協作：
 // 1. onNewSample 內若 cursorState.mode === 'cursor'，就只更新 chart dataset，

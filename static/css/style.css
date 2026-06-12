@@ -461,17 +461,9 @@ main {
 #cursorInfoRange {
   color: var(--text);
 }
-#cursorInfoCoverage {
-  color: var(--text);
-}
-#cursorInfoCoverage.warn {
-  color: #fd7e14;
-  font-weight: 600;
-}
-#cursorInfoCoverage.calculating {
-  color: var(--text-dim);
-  font-style: italic;
-}
+/* v6.1.3: 移除「資料覆蓋」顯示，相關樣式一併移除
+   （原本 #cursorInfoCoverage / .warn / .calculating）*/
+
 
 /* === 量測模式表格欄位配色 === */
 
