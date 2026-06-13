@@ -55,6 +55,7 @@ import threading
 import time
 from collections import deque
 from datetime import datetime, timedelta
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Dict, List, Optional, Deque
 
 from flask import Flask, jsonify, render_template, request, send_from_directory, Response
@@ -1010,7 +1011,7 @@ def api_export_csv(station: str):
         if b is None:
             b = {
                 "_dt": bucket_dt,
-                "sums":  [0.0] * 20,
+                "sums":  [Decimal("0")] * 20,
                 "cnts":  [0]   * 20,
                 "any":   [False] * 20,
             }
@@ -1020,7 +1021,8 @@ def api_export_csv(station: str):
             if v is None:
                 continue
             try:
-                b["sums"][i - 1] += float(v)
+                # 用 Decimal 累加避免 IEEE 754 float 在平均時的 0.05→0.04999 誤差
+                b["sums"][i - 1] += Decimal(str(v))
                 b["cnts"][i - 1] += 1
                 b["any"][i - 1]  = True
             except (TypeError, ValueError):
@@ -1043,9 +1045,11 @@ def api_export_csv(station: str):
         row = [ts_str]
         for i in range(20):
             if b["any"][i]:
-                avg = b["sums"][i] / b["cnts"][i]
-                # 小數 1 位四捨五入（half-to-even: Python f"{x:.1f}" 為 round-half-to-even）
-                row.append(f"{avg:.1f}")
+                # 小數第二位四捨五入，輸出小數一位（ROUND_HALF_UP：5 永遠進位）
+                # sums 是 Decimal 累加，直接除 cnt 仍是 Decimal，無浮點誤差
+                avg = b["sums"][i] / Decimal(b["cnts"][i])
+                q = avg.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+                row.append(str(q))
             else:
                 row.append("")
         writer.writerow(row)
