@@ -155,7 +155,8 @@ log.debug("logger 模組載入完成（尚未決定等級）")
 
 # === Flask / SocketIO 初始化 ===
 app = Flask(__name__, static_folder="static", template_folder="templates")
-app.config["SECRET_KEY"] = "gx20-web-monitor-secret"
+# SECRET_KEY 從環境變數讀取；本機開發可放在 config/.env 或環境裡
+app.config["SECRET_KEY"] = os.environ.get("FLASK_SECRET_KEY", "gx20-web-monitor-dev-only")
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
 
@@ -1043,8 +1044,8 @@ def api_export_csv(station: str):
         for i in range(20):
             if b["any"][i]:
                 avg = b["sums"][i] / b["cnts"][i]
-                # 與原樣本位數一致：取小數 4 位（避免科學記號）
-                row.append(f"{avg:.4f}")
+                # 小數 1 位四捨五入（half-to-even: Python f"{x:.1f}" 為 round-half-to-even）
+                row.append(f"{avg:.1f}")
             else:
                 row.append("")
         writer.writerow(row)
