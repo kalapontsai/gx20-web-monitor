@@ -13,6 +13,34 @@ DEFAULT_GX20_HOST = "192.168.1.1"
 DEFAULT_GX20_PORT = 34434
 POLL_INTERVAL_SEC = 10
 
+# ---------- PW3335 電力計 (v6.2 新增) ----------
+# 6 工位各一台 PW3335，預設 IP 沿用 desktop 版 GX20_PW3335.py line 884 的對應規則
+# （工位1 → 192.168.1.2 ... 工位6 → 192.168.1.7；GX20 本身用 192.168.1.1）
+DEFAULT_PW3335_PORT = 3300
+DEFAULT_PW3335_HOSTS = {
+    "工位1": "192.168.1.2",
+    "工位2": "192.168.1.3",
+    "工位3": "192.168.1.4",
+    "工位4": "192.168.1.5",
+    "工位5": "192.168.1.6",
+    "工位6": "192.168.1.7",
+}
+
+# 電力線顏色（避開溫度線的 20 色，盡量用對比明顯的安全色）
+DEFAULT_PW_COLORS = {
+    "V": "#f1c40f",   # 電壓：黃 (安全色)
+    "I": "#1abc9c",   # 電流：青綠
+    "W": "#e74c3c",   # 功率：紅
+}
+
+# 電力 Y 軸預設範圍（依使用者 2026-06-15 確認）
+DEFAULT_PW_V_MIN  = 0
+DEFAULT_PW_V_MAX  = 230
+DEFAULT_PW_IW_MIN = 0
+DEFAULT_PW_IW_MAX_I = 5
+DEFAULT_PW_IW_MAX_W = 250
+DEFAULT_PW_AUTO = False
+
 # ---------- 圖表 ----------
 # v3：history_minutes 設定已從 UI 移除，改以 chart_x_minutes 為主
 # v6：Y 軸範圍改為 per-station 結構（{工位1: {min, max, auto}, ...}）
@@ -57,6 +85,51 @@ def default_y_axis() -> dict:
     }
 
 
+# === v6.2：PW3335 設定預設值 ===
+
+def default_pw3335() -> dict:
+    """PW3335 整體設定。
+    結構：
+      {
+        "port":   int,                    # 6 台共用 TCP port
+        "hosts":  {station: ip, ...},     # 每工位的 PW3335 IP
+        "remote": {station: bool, ...},   # 每工位是否啟用 (False=寫 0)
+        "colors": {"V": "#...", "I": "#...", "W": "#..."},  # 電力線顏色
+      }
+    """
+    return {
+        "port":   DEFAULT_PW3335_PORT,
+        "hosts":  {s: DEFAULT_PW3335_HOSTS[s] for s in STATIONS},
+        "remote": {s: False for s in STATIONS},  # 預設全關，與 desktop Debug_mode 對齊
+        "colors": dict(DEFAULT_PW_COLORS),
+    }
+
+
+def default_pw_axis() -> dict:
+    """電力 Y 軸 per-station。
+    結構：{工位名: {
+        "v":  {"min", "max", "auto"},  # 電壓軸（畫在右側）
+        "iw": {"min", "max", "auto"},  # 電流+功率共用軸（畫在左側）
+    }}
+    預設依使用者 2026-06-15 決定：V(0,230)/I(0,5)/W(0,250)，auto=False。
+    """
+    return {
+        s: {
+            "v": {
+                "min":  DEFAULT_PW_V_MIN,
+                "max":  DEFAULT_PW_V_MAX,
+                "auto": DEFAULT_PW_AUTO,
+            },
+            "iw": {
+                "min":  DEFAULT_PW_IW_MIN,
+                "max":  DEFAULT_PW_IW_MAX_W,   # I/W 共用；I 的 5A 會被壓扁，但 W 範圍較大為主
+                "auto": DEFAULT_PW_AUTO,
+            },
+        }
+        for s in STATIONS
+    }
+
+
 # ---------- 預設完整設定 dict（給 settings 頁初始化用） ----------
 def default_settings() -> dict:
     return {
@@ -73,6 +146,9 @@ def default_settings() -> dict:
         "retention_days": DEFAULT_RETENTION_DAYS,
         "max_points":     DEFAULT_MAX_POINTS,
         "chart_x_minutes": DEFAULT_CHART_X_MINUTES,
+        # v6.2：PW3335 電力計
+        "pw3335":         default_pw3335(),
+        "pw_axis":        default_pw_axis(),
     }
 
 
@@ -96,6 +172,11 @@ __all__ = [
     "DEFAULT_RATE_WINDOW_MIN", "DEFAULT_AVG_WINDOW_MIN",
     "DEFAULT_Y_MIN", "DEFAULT_Y_MAX", "DEFAULT_Y_AUTO",
     "DEFAULT_THEME", "DEFAULT_RETENTION_DAYS", "DEFAULT_MAX_POINTS", "DEFAULT_CHART_X_MINUTES", "RING_BUFFER_SIZE",
-    "default_visibility", "default_alias", "default_color", "default_y_axis", "default_settings",
+    "DEFAULT_PW3335_PORT", "DEFAULT_PW3335_HOSTS", "DEFAULT_PW_COLORS",
+    "DEFAULT_PW_V_MIN", "DEFAULT_PW_V_MAX", "DEFAULT_PW_IW_MIN",
+    "DEFAULT_PW_IW_MAX_I", "DEFAULT_PW_IW_MAX_W", "DEFAULT_PW_AUTO",
+    "default_visibility", "default_alias", "default_color", "default_y_axis",
+    "default_pw3335", "default_pw_axis",
+    "default_settings",
     "to_json", "from_json",
 ]
