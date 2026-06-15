@@ -48,12 +48,12 @@
 const POINTS = 20;
 let currentStation = null;
 let chart = null;
-let pwChart = null;                 // v6.2：電力圖表 (PW3335)
+let pwChart = null;                 // v7：電力圖表 (PW3335)
 let themeRebuildPending = false;   // 主題切換時排隊重建，避免動畫中重入
 let loadGen = 0;                    // loadHistory / onNewSample 世代號，避免中途被站點切換打斷
 const channelNums = {};
 
-// v6.2：電力線顏色（在 init 內用 settings.pw3335.colors 蓋掉預設）
+// v7：電力線顏色（在 init 內用 settings.pw3335.colors 蓋掉預設）
 const PW_COLORS_DEFAULT = { V: "#f1c40f", I: "#1abc9c", W: "#e74c3c" };
 
 // ---------- 初始化 ----------
@@ -192,7 +192,7 @@ async function refreshConnStatus() {
   }
 }
 
-// v6.2：拉 6 工位 PW3335 連線狀態，更新右側 badge
+// v7：拉 6 工位 PW3335 連線狀態，更新右側 badge
 async function refreshPwConnStatus() {
   try {
     const r = await fetch("/api/pw_connection");
@@ -339,7 +339,7 @@ async function patchSettingAndApply(key, value, which) {
     // 狀態下會讓 scale 退化成毫秒級（出現 0.002 秒跨度的刻度）。
     loadGen += 1;
     rebuildChart();      // 以新視窗重建 chart（含新 min/max）
-    rebuildPowerChart(); // v6.2：電力圖表一起重建
+    rebuildPowerChart(); // v7：電力圖表一起重建
     await loadHistory(loadGen);
     // 拉完歷史後，鎖住 X 軸 min/max 避免下次 chart.update 又退化
     if (chart) {
@@ -526,7 +526,7 @@ function rebuildChart() { buildChart(); }
 function rebuildPowerChart() { buildPowerChart(); }
 
 // =============================================================
-// v6.2：電力圖表（PW3335）
+// v7：電力圖表（PW3335）
 //
 // 結構：3 個 dataset
 //   - v (電壓, 單位 V, 黃色)
@@ -540,7 +540,7 @@ function rebuildPowerChart() { buildPowerChart(); }
 // =============================================================
 
 /**
- * v6.2：取得「目前站位」的電力 Y 軸設定。
+ * v7：取得「目前站位」的電力 Y 軸設定。
  * 結構 { v:{min,max,auto}, iw:{min,max,auto} }。
  */
 function getPwAxisForCurrent() {
@@ -680,7 +680,7 @@ function applyThemeToChart() {
 }
 
 /**
- * v6.2：套用主題到電力圖表（不重建、不清資料）。
+ * v7：套用主題到電力圖表（不重建、不清資料）。
  */
 function applyThemeToPwChart() {
   if (!pwChart) return;
@@ -704,7 +704,7 @@ const _obs = new MutationObserver(() => {
     themeRebuildPending = false;
     if (!chart) return;
     applyThemeToChart();
-    applyThemeToPwChart();   // v6.2：電力圖表一起套新顏色
+    applyThemeToPwChart();   // v7：電力圖表一起套新顏色
   });
 });
 _obs.observe(document.body, { attributes: true, attributeFilter: ["data-theme"] });
@@ -739,7 +739,7 @@ async function loadHistory(gen) {
         if (v === null || v === undefined) continue;
         ds.data.push({ x: ts, y: v });
       }
-      // v6.2：電力 dataset 一起補
+      // v7：電力 dataset 一起補
       if (pwChart && pwChart.data.datasets) {
         for (const ds of pwChart.data.datasets) {
           const v = row[ds.pointKey];
@@ -774,7 +774,7 @@ function onNewSample(payload) {
     const v = payload.temps[idx];
     if (v !== null && v !== undefined) ds.data.push({ x: ts, y: v });
   }
-  // v6.2：電力 dataset
+  // v7：電力 dataset
   if (pwChart && payload.pw) {
     for (const ds of pwChart.data.datasets) {
       const v = payload.pw[ds.pointKey];
@@ -827,7 +827,7 @@ function pruneOldData() {
 }
 
 /**
- * v6.2：電力圖表 prune（跟 pruneOldData 同規則，套到 pwChart）。
+ * v7：電力圖表 prune（跟 pruneOldData 同規則，套到 pwChart）。
  * 電力只有 3 條線、點數量遠低於 20 條溫度線，但同一條規則以防爆量。
  */
 function prunePowerData() {
@@ -869,7 +869,7 @@ function slideXWindow() {
 }
 
 /**
- * v6.2：電力圖表 X 軸滑動視窗（跟 slideXWindow 同規則，套到 pwChart）。
+ * v7：電力圖表 X 軸滑動視窗（跟 slideXWindow 同規則，套到 pwChart）。
  */
 function slidePowerXWindow() {
   if (!pwChart) return;
@@ -917,7 +917,7 @@ function updateReadoutTable(payload) {
 }
 
 // =============================================================
-// v6.2：電力表（PW3335）右側顯示
+// v7：電力表（PW3335）右側顯示
 //
 // live 模式：直接顯示 V / I / W 讀值
 // cursor 模式：改顯示區間 [tL, tR] 內的 avg / max / min
@@ -1189,7 +1189,7 @@ function setCursorMode(mode) {
       layoutCursorBars();
       updateCursorInfo();
     }
-    // v6.2：量測模式也更新電力表
+    // v7：量測模式也更新電力表
     updatePowerReadout(null);
   }
 }
@@ -1292,7 +1292,7 @@ function bindCursorDrag(id) {
     layoutCursorBars();
     updateCursorInfo();           // v6.1.2: 拖曳時同步更新「區間」資訊
     updateReadoutFromCursor();
-    updatePowerReadout(null);     // v6.2：拖曳時也更新電力表
+    updatePowerReadout(null);     // v7：拖曳時也更新電力表
     // v6.1.3: 移除 scheduleCoverageRequest()，不再打 /api/cursor/coverage
   };
   const onUp = (e) => {

@@ -39,7 +39,7 @@ async function init() {
   document.getElementById("retention_days").value   = settings.retention_days;
   document.getElementById("max_points").value       = settings.max_points;
 
-  // v6.2：PW3335 + 電力 Y 軸
+  // v7：PW3335 + 電力 Y 軸
   renderPw3335();
   renderPwAxisTabs();
   fillPwAxisFields(currentStation);
@@ -63,7 +63,7 @@ async function init() {
   bindField("retention_days",  (v) => GX20State.update("retention_days", Math.max(1, Math.min(30, parseInt(v, 10) || 7))));
   bindField("max_points",      (v) => GX20State.update("max_points", Math.max(200, Math.min(10000, parseInt(v, 10) || 2000))));
 
-  // v6.2：PW3335 port
+  // v7：PW3335 port
   bindField("pw3335_port",     (v) => {
     const cur = GX20State.settings.pw3335 || {};
     const next = Object.assign({}, cur, { port: parseInt(v, 10) || 3300 });
@@ -73,7 +73,7 @@ async function init() {
   // v6：Y 軸三欄位綁定到「目前站位」的 y_axis entry
   bindYAxisFields();
 
-  // v6.2：電力 Y 軸欄位綁定
+  // v7：電力 Y 軸欄位綁定
   bindPwAxisFields();
 
   // Debug log 切換 → 直接 POST /api/debug（不透過 GX20State）
@@ -357,7 +357,7 @@ function bindYAxisFields() {
 window.addEventListener("DOMContentLoaded", init);
 
 // =============================================================
-// v6.2：PW3335 區塊 + 電力 Y 軸
+// v7：PW3335 區塊 + 電力 Y 軸
 //   - renderPw3335()      造 6 工位 IP + 啟用 checkbox 表格
 //   - renderPwAxisTabs()  6 工位 tab；切換時只動電力 Y 軸欄位
 //   - fillPwAxisFields()  從 settings.pw_axis[st] 把值填進去

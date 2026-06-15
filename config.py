@@ -13,7 +13,7 @@ DEFAULT_GX20_HOST = "192.168.1.1"
 DEFAULT_GX20_PORT = 34434
 POLL_INTERVAL_SEC = 10
 
-# ---------- PW3335 電力計 (v6.2 新增) ----------
+# ---------- PW3335 電力計 (v7 新增) ----------
 # 6 工位各一台 PW3335，預設 IP 沿用 desktop 版 GX20_PW3335.py line 884 的對應規則
 # （工位1 → 192.168.1.2 ... 工位6 → 192.168.1.7；GX20 本身用 192.168.1.1）
 DEFAULT_PW3335_PORT = 3300
@@ -85,7 +85,7 @@ def default_y_axis() -> dict:
     }
 
 
-# === v6.2：PW3335 設定預設值 ===
+# === v7：PW3335 設定預設值 ===
 
 def default_pw3335() -> dict:
     """PW3335 整體設定。
@@ -146,7 +146,7 @@ def default_settings() -> dict:
         "retention_days": DEFAULT_RETENTION_DAYS,
         "max_points":     DEFAULT_MAX_POINTS,
         "chart_x_minutes": DEFAULT_CHART_X_MINUTES,
-        # v6.2：PW3335 電力計
+        # v7：PW3335 電力計
         "pw3335":         default_pw3335(),
         "pw_axis":        default_pw_axis(),
     }

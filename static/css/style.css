@@ -118,7 +118,7 @@ main {
   padding: 8px;
   border: 1px solid var(--border);
   box-shadow: var(--shadow);
-  /* v6.2：內部用 flex column 把上下面板堆起來 */
+  /* v7：內部用 flex column 把上下面板堆起來 */
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -494,7 +494,7 @@ body.cursor-mode .chart-temp { flex: 1 1 0; }
   font-weight: 500;
 }
 
-/* === v6.2：電力表（PW3335） === */
+/* === v7：電力表（PW3335） === */
 
 #pwReadoutTable {
   width: 100%;
@@ -533,7 +533,7 @@ body.cursor-mode .chart-temp { flex: 1 1 0; }
 .pw-conn-badge.off { background: var(--dot-off); color: #fff;    border-color: var(--dot-off); }
 .pw-conn-badge.disabled { background: var(--surface-2); color: var(--text-mute); }
 
-/* === v6.2：設定頁 PW3335 區塊 === */
+/* === v7：設定頁 PW3335 區塊 === */
 
 .pw-grid {
   display: grid;

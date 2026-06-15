@@ -67,8 +67,8 @@
       retention_days:  sess.retention_days,
       max_points:      sess.max_points,
       chart_x_minutes: sess.chart_x_minutes,
-      pw3335:          sess.pw3335,          // v6.2：PW3335 整體設定
-      pw_axis:         sess.pw_axis,         // v6.2：電力 Y 軸 per-station
+      pw3335:          sess.pw3335,          // v7：PW3335 整體設定
+      pw_axis:         sess.pw_axis,         // v7：電力 Y 軸 per-station
       theme:         sess.theme,
     };
     if (saved === null) {
@@ -179,8 +179,8 @@
         ch_visibility:  this.settings.ch_visibility,
         ch_alias:       this.settings.ch_alias,
         ch_color:       this.settings.ch_color,
-        pw3335:         this.settings.pw3335,        // v6.2：PW3335
-        pw_axis:        this.settings.pw_axis,       // v6.2：電力 Y 軸
+        pw3335:         this.settings.pw3335,        // v7：PW3335
+        pw_axis:        this.settings.pw_axis,       // v7：電力 Y 軸
         theme:          this.theme,
       };
       const r = await fetch("/api/settings", {
@@ -203,8 +203,8 @@
       this.sess.retention_days  = payload.retention_days;
       this.sess.max_points      = payload.max_points;
       this.sess.chart_x_minutes = payload.chart_x_minutes;
-      this.sess.pw3335          = payload.pw3335;     // v6.2
-      this.sess.pw_axis         = payload.pw_axis;    // v6.2
+      this.sess.pw3335          = payload.pw3335;     // v7
+      this.sess.pw_axis         = payload.pw_axis;    // v7
       this.sess.theme          = payload.theme;
       // 記下「已保存的快照」供 dirty 比較
       this.sess._saved = {
@@ -219,8 +219,8 @@
         retention_days:  payload.retention_days,
         max_points:      payload.max_points,
         chart_x_minutes: payload.chart_x_minutes,
-        pw3335:          payload.pw3335,           // v6.2
-        pw_axis:         payload.pw_axis,          // v6.2
+        pw3335:          payload.pw3335,           // v7
+        pw_axis:         payload.pw_axis,          // v7
         theme:         payload.theme,
       };
       sessionStorage.setItem(SESSION_KEY, JSON.stringify(this.sess));

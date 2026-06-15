@@ -41,7 +41,7 @@ v3 變更:
   GET  /api/debug              讀取 debug 狀態
   POST /api/debug              切換 debug 狀態
   GET  /api/debug/log_tail     查 app.log 末段
-  GET  /api/pw_connection      PW3335 6 工位連線狀態 (v6.2)
+  GET  /api/pw_connection      PW3335 6 工位連線狀態 (v7)
 """
 
 import atexit
@@ -65,7 +65,7 @@ from flask_socketio import SocketIO
 import config
 import storage
 from gx20_reader import GX20, STATIONS, POINTS_PER_STATION, CHANNEL_NUMBER
-from pw3335_reader import fetch_one_station, DEFAULT_PW3335_PORT  # v6.2
+from pw3335_reader import fetch_one_station, DEFAULT_PW3335_PORT  # v7
 from lttb import downsample_rows
 
 # === Debug logger（v3 新增）===
@@ -211,9 +211,9 @@ state = {
     "last_purge_at":  0.0,        # 最後一次 purge 時間戳
     "lock":           threading.Lock(),
     # ring buffer: 每工位 → deque of (ts, temps[20], v, i, w)
-    # v6.2：電力欄位併入同一筆 ring entry，前端推播時可一次拿全
+    # v7：電力欄位併入同一筆 ring entry，前端推播時可一次拿全
     "ring":           {s: deque(maxlen=config.RING_BUFFER_SIZE) for s in STATIONS},
-    # v6.2：PW3335 6 工位連線狀態 (用於 /api/pw_connection 顯示)
+    # v7：PW3335 6 工位連線狀態 (用於 /api/pw_connection 顯示)
     "pw_connected":   {s: False for s in STATIONS},
     "pw_last_error":  {s: None for s in STATIONS},
     "pw_last_vip":    {s: (None, None, None) for s in STATIONS},  # (V, I, W) 最後成功值
@@ -274,7 +274,7 @@ def load_settings() -> dict:
                     merged[st] = v[st]
             out[k] = merged
 
-    # v6.2：pw3335 = {port, hosts, remote, colors}
+    # v7：pw3335 = {port, hosts, remote, colors}
     pw_raw = config.from_json(raw.get("pw3335"), default=defaults["pw3335"])
     if isinstance(pw_raw, dict):
         merged_pw = dict(defaults["pw3335"])
@@ -305,7 +305,7 @@ def load_settings() -> dict:
                     merged_pw["colors"][key] = v.strip()
         out["pw3335"] = merged_pw
 
-    # v6.2：pw_axis = {station: {v:{min,max,auto}, iw:{min,max,auto}}}
+    # v7：pw_axis = {station: {v:{min,max,auto}, iw:{min,max,auto}}}
     pw_axis_raw = config.from_json(raw.get("pw_axis"), default=defaults["pw_axis"])
     if isinstance(pw_axis_raw, dict):
         merged_pw_axis = dict(defaults["pw_axis"])
@@ -352,7 +352,7 @@ def save_settings(patch: dict) -> None:
                     existing[st] = new_st
             storage.set_setting("y_axis", config.to_json(existing))
         elif k == "pw_axis" and isinstance(v, dict):
-            # v6.2：pw_axis per-station，{v:{min,max,auto}, iw:{min,max,auto}}
+            # v7：pw_axis per-station，{v:{min,max,auto}, iw:{min,max,auto}}
             existing_raw = storage.get_setting("pw_axis")
             existing = config.from_json(existing_raw, default=config.default_settings()["pw_axis"])
             if not isinstance(existing, dict):
@@ -370,7 +370,7 @@ def save_settings(patch: dict) -> None:
                     existing[st] = new_st
             storage.set_setting("pw_axis", config.to_json(existing))
         elif k == "pw3335" and isinstance(v, dict):
-            # v6.2：pw3335 = {port, hosts, remote, colors}
+            # v7：pw3335 = {port, hosts, remote, colors}
             existing_raw = storage.get_setting("pw3335")
             existing = config.from_json(existing_raw, default=config.default_settings()["pw3335"])
             if not isinstance(existing, dict):
@@ -581,7 +581,7 @@ def poller() -> None:
                     log.warning("[round #%d] %s 寫入 SQLite 失敗（不連累其他工位）: %s",
                                 round_no, station, e)
 
-            # v6.2：拉取 PW3335（6 工位）
+            # v7：拉取 PW3335（6 工位）
             # 規則：
             #   - remote=False → 該工位以 (0, 0, 0) 寫入（依使用者需求）
             #   - remote=True 且連線失敗 → 該工位以 (0, 0, 0) 寫入，標記 pw_connected[st]=False
@@ -650,7 +650,7 @@ def poller() -> None:
                 try:
                     rates = [compute_rate_from_ring(station, rate_window, i) for i in range(20)]
                     avgs  = [compute_avg_from_ring(station, avg_window, i)  for i in range(20)]
-                    # v6.2：取 ring 最後一筆的 (v, i, w) 一起推
+                    # v7：取 ring 最後一筆的 (v, i, w) 一起推
                     rb_last = state["ring"][station][-1] if state["ring"][station] else None
                     pw_payload = {
                         "v": rb_last[2] if rb_last else 0.0,
@@ -806,7 +806,7 @@ def api_latest(station: str):
     temps = [r.get(f"t{i+1:02d}") for i in range(20)]
     rates = [compute_rate_from_ring(station, rate_window, i) for i in range(20)]
     avgs  = [compute_avg_from_ring(station, avg_window,  i) for i in range(20)]
-    # v6.2：電力值來自該 row 的 v/i/w 欄
+    # v7：電力值來自該 row 的 v/i/w 欄
     pw_payload = {
         "v": r.get("v"),
         "i": r.get("i"),
@@ -838,7 +838,7 @@ def api_connection():
 @app.route("/api/pw_connection")
 def api_pw_connection():
     """
-    v6.2：回傳 6 工位 PW3335 連線狀態。
+    v7：回傳 6 工位 PW3335 連線狀態。
     用於主畫面右上角顯示（若有任一工位 enabled 但 disconnected 時高亮）。
     結構：{station: {remote, connected, host, last_error, last_vip:{v,i,w}}, ...}
     """
@@ -1160,7 +1160,7 @@ def _sanitize_csv_cell(s: str) -> str:
 @app.route("/api/export_csv/<station>")
 def api_export_csv(station: str):
     """
-    匯出指定工位記錄為 CSV（v6.2：溫度 + 電力 V/I/W）。
+    匯出指定工位記錄為 CSV（v7：溫度 + 電力 V/I/W）。
 
     區間：
       - query string ?since_minutes=N
@@ -1211,7 +1211,7 @@ def api_export_csv(station: str):
     # 取得別名
     aliases = s.get("ch_alias", {}).get(station, [])
 
-    # 造標頭（v6.2：加 V, I, W）
+    # 造標頭（v7：加 V, I, W）
     headers = ["datetime"]
     for i in range(1, 21):
         alias = (aliases[i - 1] or "").strip() if i - 1 < len(aliases) else ""
@@ -1237,7 +1237,7 @@ def api_export_csv(station: str):
                 "sums":  [Decimal("0")] * 20,
                 "cnts":  [0]   * 20,
                 "any":   [False] * 20,
-                # v6.2：電力三欄
+                # v7：電力三欄
                 "pw_sums": [Decimal("0")] * 3,   # [V, I, W]
                 "pw_cnts": [0] * 3,
                 "pw_any":  [False] * 3,
@@ -1255,7 +1255,7 @@ def api_export_csv(station: str):
             except (TypeError, ValueError):
                 # 非數字視為 None，不計入平均
                 continue
-        # v6.2：電力（V, I, W）
+        # v7：電力（V, I, W）
         for k, key in enumerate(("v", "i", "w")):
             pv = r.get(key)
             if pv is None:
@@ -1290,7 +1290,7 @@ def api_export_csv(station: str):
                 row.append(str(q))
             else:
                 row.append("")
-        # v6.2：電力三欄（V 小數 2、I 小數 3、W 小數 2）
+        # v7：電力三欄（V 小數 2、I 小數 3、W 小數 2）
         for k, decimals in enumerate((2, 3, 2)):
             if b["pw_any"][k]:
                 avg = b["pw_sums"][k] / Decimal(b["pw_cnts"][k])

@@ -1,5 +1,5 @@
 {
-  "_comment": "v6.2 範例設定檔（v6.2 新增 pw3335 / pw_axis 兩個區塊）。複製到 config/settings.json 後依現場環境修改。實際使用者設定存在 SQLite 與本檔同步；本檔純供初次部署參考。",
+  "_comment": "v7 範例設定檔（v7 新增 pw3335 / pw_axis 兩個區塊）。複製到 config/settings.json 後依現場環境修改。實際使用者設定存在 SQLite 與本檔同步；本檔純供初次部署參考。",
   "avg_window_min": 10,
   "chart_x_minutes": 0,
   "debug_log_enabled": 0,
@@ -15,7 +15,7 @@
   "ch_color": "{\"工位1\": [\"#1f77b4\", \"#ff7f0e\", ...], ...}",
   "ch_visibility": "{\"工位1\": [true, true, ...], ...}",
   "pw3335": {
-    "_comment": "v6.2：PW3335 電力計。remote=false 該工位寫 0 值。",
+    "_comment": "v7：PW3335 電力計。remote=false 該工位寫 0 值。",
     "port": 3300,
     "hosts": {
       "工位1": "192.168.1.2",
@@ -40,7 +40,7 @@
     }
   },
   "pw_axis": {
-    "_comment": "v6.2：電力 Y 軸 per-station。v 在右、iw (I+W 共用) 在左。",
+    "_comment": "v7：電力 Y 軸 per-station。v 在右、iw (I+W 共用) 在左。",
     "工位1": { "v": {"min": 0, "max": 230, "auto": false}, "iw": {"min": 0, "max": 250, "auto": false} },
     "工位2": { "v": {"min": 0, "max": 230, "auto": false}, "iw": {"min": 0, "max": 250, "auto": false} },
     "工位3": { "v": {"min": 0, "max": 230, "auto": false}, "iw": {"min": 0, "max": 250, "auto": false} },
