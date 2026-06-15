@@ -1160,7 +1160,7 @@ def _sanitize_csv_cell(s: str) -> str:
 @app.route("/api/export_csv/<station>")
 def api_export_csv(station: str):
     """
-    匯出指定工位溫度記錄為 CSV（v3 改版：取樣整合為每分鐘一筆）。
+    匯出指定工位記錄為 CSV（v6.2：溫度 + 電力 V/I/W）。
 
     區間：
       - query string ?since_minutes=N
@@ -1174,10 +1174,15 @@ def api_export_csv(station: str):
         整合成 1 筆（每個 channel 各別平均；全 None → 空字串）
     格式：
       - 編碼: UTF-8-sig (BOM)
-      - 標頭: datetime, 別名1, 別名2, ... 別名20
+      - 標頭: datetime, 別名1, 別名2, ... 別名20, V, I, W
       - 時間格式: %m/%d/%y %H:%M:%S
       - 不包含 rate / avg
       - 不考慮隱藏狀態 → 20 個接點都出
+    電力值（V/I/W）：
+      - 精度：V 小數 2 位、I 小數 3 位、W 小數 2 位（沿用 desktop 版）
+      - 該分鐘內若有任一筆 v/i/w 為 None → 該分鐘該欄輸出空字串
+        （區分「該分鐘確實都是 0」v.s.「該分鐘沒拉到電力」）
+      - Decimal 累加 + ROUND_HALF_UP（與溫度同邏輯，避免 IEEE 754 誤差）
     """
     if station not in STATIONS:
         return jsonify({"ok": False, "error": "unknown station"}), 404
@@ -1206,12 +1211,13 @@ def api_export_csv(station: str):
     # 取得別名
     aliases = s.get("ch_alias", {}).get(station, [])
 
-    # 造標頭
+    # 造標頭（v6.2：加 V, I, W）
     headers = ["datetime"]
     for i in range(1, 21):
         alias = (aliases[i - 1] or "").strip() if i - 1 < len(aliases) else ""
         col_name = alias if alias else str(i)
         headers.append(_sanitize_csv_cell(col_name))
+    headers.extend(["V", "I", "W"])
 
     # 整合 10 秒→1 分鐘：以每分鐘 bucket 算術平均
     # bucket_key 取該分鐘的整點 ISO 字串（避免浮點誤差）
@@ -1231,6 +1237,10 @@ def api_export_csv(station: str):
                 "sums":  [Decimal("0")] * 20,
                 "cnts":  [0]   * 20,
                 "any":   [False] * 20,
+                # v6.2：電力三欄
+                "pw_sums": [Decimal("0")] * 3,   # [V, I, W]
+                "pw_cnts": [0] * 3,
+                "pw_any":  [False] * 3,
             }
             buckets[bkey] = b
         for i in range(1, 21):
@@ -1244,6 +1254,17 @@ def api_export_csv(station: str):
                 b["any"][i - 1]  = True
             except (TypeError, ValueError):
                 # 非數字視為 None，不計入平均
+                continue
+        # v6.2：電力（V, I, W）
+        for k, key in enumerate(("v", "i", "w")):
+            pv = r.get(key)
+            if pv is None:
+                continue
+            try:
+                b["pw_sums"][k] += Decimal(str(pv))
+                b["pw_cnts"][k] += 1
+                b["pw_any"][k]  = True
+            except (TypeError, ValueError):
                 continue
 
     if not buckets:
@@ -1266,6 +1287,15 @@ def api_export_csv(station: str):
                 # sums 是 Decimal 累加，直接除 cnt 仍是 Decimal，無浮點誤差
                 avg = b["sums"][i] / Decimal(b["cnts"][i])
                 q = avg.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+                row.append(str(q))
+            else:
+                row.append("")
+        # v6.2：電力三欄（V 小數 2、I 小數 3、W 小數 2）
+        for k, decimals in enumerate((2, 3, 2)):
+            if b["pw_any"][k]:
+                avg = b["pw_sums"][k] / Decimal(b["pw_cnts"][k])
+                q = avg.quantize(Decimal("0.1") if decimals == 1 else Decimal("0.01") if decimals == 2 else Decimal("0.001"),
+                                 rounding=ROUND_HALF_UP)
                 row.append(str(q))
             else:
                 row.append("")
