@@ -41,6 +41,7 @@ v3 變更:
   GET  /api/debug              讀取 debug 狀態
   POST /api/debug              切換 debug 狀態
   GET  /api/debug/log_tail     查 app.log 末段
+  GET  /api/pw_connection      PW3335 6 工位連線狀態 (v6.2)
 """
 
 import atexit
@@ -64,6 +65,7 @@ from flask_socketio import SocketIO
 import config
 import storage
 from gx20_reader import GX20, STATIONS, POINTS_PER_STATION, CHANNEL_NUMBER
+from pw3335_reader import fetch_one_station, DEFAULT_PW3335_PORT  # v6.2
 from lttb import downsample_rows
 
 # === Debug logger（v3 新增）===
@@ -208,8 +210,13 @@ state = {
     "connected":      False,
     "last_purge_at":  0.0,        # 最後一次 purge 時間戳
     "lock":           threading.Lock(),
-    # ring buffer: 每工位 → deque of (ts, temps[20])
+    # ring buffer: 每工位 → deque of (ts, temps[20], v, i, w)
+    # v6.2：電力欄位併入同一筆 ring entry，前端推播時可一次拿全
     "ring":           {s: deque(maxlen=config.RING_BUFFER_SIZE) for s in STATIONS},
+    # v6.2：PW3335 6 工位連線狀態 (用於 /api/pw_connection 顯示)
+    "pw_connected":   {s: False for s in STATIONS},
+    "pw_last_error":  {s: None for s in STATIONS},
+    "pw_last_vip":    {s: (None, None, None) for s in STATIONS},  # (V, I, W) 最後成功值
 }
 
 
@@ -267,6 +274,61 @@ def load_settings() -> dict:
                     merged[st] = v[st]
             out[k] = merged
 
+    # v6.2：pw3335 = {port, hosts, remote, colors}
+    pw_raw = config.from_json(raw.get("pw3335"), default=defaults["pw3335"])
+    if isinstance(pw_raw, dict):
+        merged_pw = dict(defaults["pw3335"])
+        # port
+        try:
+            merged_pw["port"] = int(pw_raw.get("port", defaults["pw3335"]["port"]))
+        except (TypeError, ValueError):
+            pass
+        # hosts
+        hosts_in = pw_raw.get("hosts")
+        if isinstance(hosts_in, dict):
+            for st in STATIONS:
+                v = hosts_in.get(st)
+                if isinstance(v, str) and v.strip():
+                    merged_pw["hosts"][st] = v.strip()
+        # remote
+        remote_in = pw_raw.get("remote")
+        if isinstance(remote_in, dict):
+            for st in STATIONS:
+                if st in remote_in:
+                    merged_pw["remote"][st] = bool(remote_in[st])
+        # colors
+        colors_in = pw_raw.get("colors")
+        if isinstance(colors_in, dict):
+            for key in ("V", "I", "W"):
+                v = colors_in.get(key)
+                if isinstance(v, str) and v.strip():
+                    merged_pw["colors"][key] = v.strip()
+        out["pw3335"] = merged_pw
+
+    # v6.2：pw_axis = {station: {v:{min,max,auto}, iw:{min,max,auto}}}
+    pw_axis_raw = config.from_json(raw.get("pw_axis"), default=defaults["pw_axis"])
+    if isinstance(pw_axis_raw, dict):
+        merged_pw_axis = dict(defaults["pw_axis"])
+        for st in STATIONS:
+            entry = pw_axis_raw.get(st)
+            if not isinstance(entry, dict):
+                continue
+            cur = dict(merged_pw_axis[st])  # copy of v / iw sub-entries
+            for axis_key in ("v", "iw"):
+                sub = entry.get(axis_key)
+                if not isinstance(sub, dict):
+                    continue
+                try:
+                    cur[axis_key] = {
+                        "min":  float(sub.get("min",  merged_pw_axis[st][axis_key]["min"])),
+                        "max":  float(sub.get("max",  merged_pw_axis[st][axis_key]["max"])),
+                        "auto": bool(sub.get("auto", merged_pw_axis[st][axis_key]["auto"])),
+                    }
+                except (TypeError, ValueError):
+                    pass
+            merged_pw_axis[st] = cur
+        out["pw_axis"] = merged_pw_axis
+
     return out
 
 
@@ -289,6 +351,59 @@ def save_settings(patch: dict) -> None:
                         new_st[sk] = sv
                     existing[st] = new_st
             storage.set_setting("y_axis", config.to_json(existing))
+        elif k == "pw_axis" and isinstance(v, dict):
+            # v6.2：pw_axis per-station，{v:{min,max,auto}, iw:{min,max,auto}}
+            existing_raw = storage.get_setting("pw_axis")
+            existing = config.from_json(existing_raw, default=config.default_settings()["pw_axis"])
+            if not isinstance(existing, dict):
+                existing = config.default_settings()["pw_axis"]
+            for st, val in v.items():
+                if st in STATIONS and isinstance(val, dict):
+                    cur_st = existing.get(st) or config.default_settings()["pw_axis"][st]
+                    if not isinstance(cur_st, dict):
+                        cur_st = config.default_settings()["pw_axis"][st]
+                    new_st = dict(cur_st)
+                    for axis_key in ("v", "iw"):
+                        sub = val.get(axis_key)
+                        if isinstance(sub, dict):
+                            new_st[axis_key] = dict(sub)
+                    existing[st] = new_st
+            storage.set_setting("pw_axis", config.to_json(existing))
+        elif k == "pw3335" and isinstance(v, dict):
+            # v6.2：pw3335 = {port, hosts, remote, colors}
+            existing_raw = storage.get_setting("pw3335")
+            existing = config.from_json(existing_raw, default=config.default_settings()["pw3335"])
+            if not isinstance(existing, dict):
+                existing = config.default_settings()["pw3335"]
+            # port
+            if "port" in v:
+                try:
+                    existing["port"] = int(v["port"])
+                except (TypeError, ValueError):
+                    pass
+            # hosts
+            hosts_in = v.get("hosts")
+            if isinstance(hosts_in, dict):
+                existing.setdefault("hosts", {})
+                for st, ip in hosts_in.items():
+                    if st in STATIONS and isinstance(ip, str) and ip.strip():
+                        existing["hosts"][st] = ip.strip()
+            # remote
+            remote_in = v.get("remote")
+            if isinstance(remote_in, dict):
+                existing.setdefault("remote", {})
+                for st, on in remote_in.items():
+                    if st in STATIONS:
+                        existing["remote"][st] = bool(on)
+            # colors
+            colors_in = v.get("colors")
+            if isinstance(colors_in, dict):
+                existing.setdefault("colors", {})
+                for key in ("V", "I", "W"):
+                    cv = colors_in.get(key)
+                    if isinstance(cv, str) and cv.strip():
+                        existing["colors"][key] = cv.strip()
+            storage.set_setting("pw3335", config.to_json(existing))
         elif k in ("ch_visibility", "ch_alias", "ch_color") and isinstance(v, dict):
             existing_raw = storage.get_setting(k)
             existing = config.from_json(existing_raw, default=config.default_settings()[k])
@@ -459,11 +574,72 @@ def poller() -> None:
             for station, temps in data.items():
                 try:
                     storage.insert_sample(ts, station, temps)
-                    state["ring"][station].append((ts, list(temps)))
+                    state["ring"][station].append((ts, list(temps), None, None, None))
                     log.debug("[round #%d] %s 寫入 SQLite 成功，ring size=%d, temps=%s",
                               round_no, station, len(state["ring"][station]), _fmt_temps(temps))
                 except Exception as e:
                     log.warning("[round #%d] %s 寫入 SQLite 失敗（不連累其他工位）: %s",
+                                round_no, station, e)
+
+            # v6.2：拉取 PW3335（6 工位）
+            # 規則：
+            #   - remote=False → 該工位以 (0, 0, 0) 寫入（依使用者需求）
+            #   - remote=True 且連線失敗 → 該工位以 (0, 0, 0) 寫入，標記 pw_connected[st]=False
+            #   - remote=True 且成功 → 用實際值寫入
+            # 一輪失敗不連累其他工位
+            pw_settings = s.get("pw3335", {})
+            pw_port = int(pw_settings.get("port", DEFAULT_PW3335_PORT))
+            pw_hosts = pw_settings.get("hosts", {})
+            pw_remote = pw_settings.get("remote", {})
+            for station in STATIONS:
+                if not pw_remote.get(station, False):
+                    # 未啟用 → 寫 0
+                    v_val, i_val, w_val, ok = 0.0, 0.0, 0.0, True
+                else:
+                    host = pw_hosts.get(station, "")
+                    if not host:
+                        v_val, i_val, w_val, ok = 0.0, 0.0, 0.0, False
+                        err_msg = f"未設定 IP（host 空字串）"
+                        log.warning("[round #%d] %s PW3335: %s", round_no, station, err_msg)
+                        with state["lock"]:
+                            state["pw_connected"][station] = False
+                            state["pw_last_error"][station] = err_msg
+                    else:
+                        v_val, i_val, w_val, ok = fetch_one_station(host, pw_port)
+                        with state["lock"]:
+                            if ok:
+                                state["pw_connected"][station] = True
+                                state["pw_last_error"][station] = None
+                                state["pw_last_vip"][station] = (v_val, i_val, w_val)
+                            else:
+                                state["pw_connected"][station] = False
+                                state["pw_last_error"][station] = "通訊失敗（詳見 app.log）"
+                        if ok:
+                            log.debug("[round #%d] %s PW3335 %s:%d → V=%.2f I=%.4f W=%.2f",
+                                      round_no, station, host, pw_port, v_val, i_val, w_val)
+                # 把電力值併進 ring buffer 的最後一筆
+                try:
+                    rb = state["ring"][station]
+                    if rb and rb[-1][0] == ts:
+                        # 用 list 重建 tuple（deque 不支援直接修改元素）
+                        prev = rb.pop()
+                        rb.append((prev[0], prev[1], v_val, i_val, w_val))
+                    # 補寫 DB：直接更新該 ts 那筆的 v/i/w
+                    with state["lock"]:
+                        # 使用 _conn_samples 直接 UPDATE
+                        db_path = storage.samples_db_path(station)
+                        import sqlite3 as _sq
+                        _c = _sq.connect(db_path, timeout=5)
+                        try:
+                            _c.execute(
+                                "UPDATE samples SET v=?, i=?, w=? WHERE ts=? AND station=?",
+                                (v_val, i_val, w_val, ts, station),
+                            )
+                            _c.commit()
+                        finally:
+                            _c.close()
+                except Exception as e:
+                    log.warning("[round #%d] %s 電力寫入失敗（不連累溫度資料）: %s",
                                 round_no, station, e)
 
             # 計算 rate / avg（用 ring buffer，不再查 DB）
@@ -474,16 +650,25 @@ def poller() -> None:
                 try:
                     rates = [compute_rate_from_ring(station, rate_window, i) for i in range(20)]
                     avgs  = [compute_avg_from_ring(station, avg_window, i)  for i in range(20)]
+                    # v6.2：取 ring 最後一筆的 (v, i, w) 一起推
+                    rb_last = state["ring"][station][-1] if state["ring"][station] else None
+                    pw_payload = {
+                        "v": rb_last[2] if rb_last else 0.0,
+                        "i": rb_last[3] if rb_last else 0.0,
+                        "w": rb_last[4] if rb_last else 0.0,
+                    }
                     payload = {
                         "ts":      ts,
                         "station": station,
                         "temps":   temps,
                         "rate":    rates,
                         "avg":     avgs,
+                        "pw":      pw_payload,
                     }
                     socketio.emit("new_sample", payload)
-                    log.debug("[round #%d] %s emit new_sample rate=%s avg=%s",
-                              round_no, station, _fmt_rates(rates), _fmt_rates(avgs))
+                    log.debug("[round #%d] %s emit new_sample rate=%s avg=%s pw=V=%.2f I=%.4f W=%.2f",
+                              round_no, station, _fmt_rates(rates), _fmt_rates(avgs),
+                              pw_payload["v"], pw_payload["i"], pw_payload["w"])
                 except Exception as e:
                     log.warning("[round #%d] %s 計算/推播失敗（不連累其他工位）: %s",
                                 round_no, station, e)
@@ -621,12 +806,19 @@ def api_latest(station: str):
     temps = [r.get(f"t{i+1:02d}") for i in range(20)]
     rates = [compute_rate_from_ring(station, rate_window, i) for i in range(20)]
     avgs  = [compute_avg_from_ring(station, avg_window,  i) for i in range(20)]
+    # v6.2：電力值來自該 row 的 v/i/w 欄
+    pw_payload = {
+        "v": r.get("v"),
+        "i": r.get("i"),
+        "w": r.get("w"),
+    }
     payload = {
         "ts":      r["ts"],
         "station": station,
         "temps":   temps,
         "rate":    rates,
         "avg":     avgs,
+        "pw":      pw_payload,
     }
     return jsonify({"ok": True, "payload": payload, "row": r})
 
@@ -641,6 +833,31 @@ def api_connection():
             "host":        state["gx20"].gsRemoteHost if state["gx20"] else None,
             "port":        state["gx20"].gnRemotePort if state["gx20"] else None,
         })
+
+
+@app.route("/api/pw_connection")
+def api_pw_connection():
+    """
+    v6.2：回傳 6 工位 PW3335 連線狀態。
+    用於主畫面右上角顯示（若有任一工位 enabled 但 disconnected 時高亮）。
+    結構：{station: {remote, connected, host, last_error, last_vip:{v,i,w}}, ...}
+    """
+    s = load_settings()
+    pw = s.get("pw3335", {})
+    hosts = pw.get("hosts", {})
+    remote = pw.get("remote", {})
+    out = {}
+    with state["lock"]:
+        for st in STATIONS:
+            v, i, w = state["pw_last_vip"].get(st, (None, None, None))
+            out[st] = {
+                "remote":     bool(remote.get(st, False)),
+                "connected":  bool(state["pw_connected"].get(st, False)),
+                "host":       hosts.get(st, ""),
+                "last_error": state["pw_last_error"].get(st),
+                "last_vip":   {"v": v, "i": i, "w": w},
+            }
+    return jsonify({"ok": True, "stations": out})
 
 
 @app.route("/api/db_stats")
