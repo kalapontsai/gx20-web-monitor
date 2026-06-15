@@ -48,9 +48,13 @@
 const POINTS = 20;
 let currentStation = null;
 let chart = null;
+let pwChart = null;                 // v6.2：電力圖表 (PW3335)
 let themeRebuildPending = false;   // 主題切換時排隊重建，避免動畫中重入
 let loadGen = 0;                    // loadHistory / onNewSample 世代號，避免中途被站點切換打斷
 const channelNums = {};
+
+// v6.2：電力線顏色（在 init 內用 settings.pw3335.colors 蓋掉預設）
+const PW_COLORS_DEFAULT = { V: "#f1c40f", I: "#1abc9c", W: "#e74c3c" };
 
 // ---------- 初始化 ----------
 
@@ -132,7 +136,12 @@ async function init() {
   refreshConnStatus();
 
   buildChart();
+  buildPowerChart();
   loadHistory();
+
+  // 定期拉 PW 連線狀態（badge）
+  refreshPwConnStatus();
+  setInterval(refreshPwConnStatus, 8000);
 
   // v6 游標模式
   initCursorMode();
@@ -180,6 +189,35 @@ async function refreshConnStatus() {
     document.getElementById("lastTs").textContent = j.last_ts ? `最後更新: ${j.last_ts}` : "";
   } catch (e) {
     updateConn(false, e.message);
+  }
+}
+
+// v6.2：拉 6 工位 PW3335 連線狀態，更新右側 badge
+async function refreshPwConnStatus() {
+  try {
+    const r = await fetch("/api/pw_connection");
+    const j = await r.json();
+    if (!j.ok) return;
+    const st = j.stations[currentStation];
+    if (!st) return;
+    const badge = document.getElementById("pwConnBadge");
+    if (!badge) return;
+    badge.classList.remove("on", "off", "disabled");
+    if (!st.remote) {
+      badge.classList.add("disabled");
+      badge.textContent = "未啟用";
+      badge.title = `PW3335 連線未啟用（設定頁可開啟）`;
+    } else if (st.connected) {
+      badge.classList.add("on");
+      badge.textContent = "已連線";
+      badge.title = `PW3335 ${st.host} 已連線\nV=${fmt(st.last_vip.v,2)} I=${fmt(st.last_vip.i,3)} W=${fmt(st.last_vip.w,2)}`;
+    } else {
+      badge.classList.add("off");
+      badge.textContent = "未連線";
+      badge.title = `PW3335 ${st.host} 未連線\n${st.last_error || ""}`;
+    }
+  } catch (e) {
+    // 略
   }
 }
 
@@ -258,7 +296,9 @@ async function switchStation(newStation) {
   document.title = `[${currentStation}]`;
   // 先清空右側表格並重畫 chart（避免殘留上一站資料的視覺）
   updateReadoutTable(null);
+  updatePowerReadout(null);
   rebuildChart();
+  rebuildPowerChart();
   // v6：rebuildChart() 內已經會用新站位的 y_axis 套 Y 軸
   await loadHistory(myGen);
   // loadHistory 內部會自己檢查世代號
@@ -272,12 +312,14 @@ async function switchStation(newStation) {
       const j = await r.json();
       if (j.ok && j.payload) {
         updateReadoutTable(j.payload);
+        updatePowerReadout(j.payload);
         document.getElementById("lastTs").textContent = `最後更新: ${j.payload.ts}`;
       }
     } catch (e) {
       // 拿不到最新也沒關係，等 socket 下一輪推播
     }
   }
+  refreshPwConnStatus();
 }
 
 /**
@@ -297,6 +339,7 @@ async function patchSettingAndApply(key, value, which) {
     // 狀態下會讓 scale 退化成毫秒級（出現 0.002 秒跨度的刻度）。
     loadGen += 1;
     rebuildChart();      // 以新視窗重建 chart（含新 min/max）
+    rebuildPowerChart(); // v6.2：電力圖表一起重建
     await loadHistory(loadGen);
     // 拉完歷史後，鎖住 X 軸 min/max 避免下次 chart.update 又退化
     if (chart) {
@@ -309,6 +352,17 @@ async function patchSettingAndApply(key, value, which) {
         chart.options.scales.x.max = undefined;
       }
       chart.update("none");
+    }
+    if (pwChart) {
+      const xMin = Number(GX20State.settings.chart_x_minutes) || 0;
+      if (xMin > 0) {
+        pwChart.options.scales.x.min = Date.now() - xMin * 60 * 1000;
+        pwChart.options.scales.x.max = Date.now();
+      } else {
+        pwChart.options.scales.x.min = undefined;
+        pwChart.options.scales.x.max = undefined;
+      }
+      pwChart.update("none");
     }
   } else if (which === "rate" || which === "avg") {
     refreshRateAvgHeaders();
@@ -469,6 +523,144 @@ function buildChart() {
 }
 
 function rebuildChart() { buildChart(); }
+function rebuildPowerChart() { buildPowerChart(); }
+
+// =============================================================
+// v6.2：電力圖表（PW3335）
+//
+// 結構：3 個 dataset
+//   - v (電壓, 單位 V, 黃色)
+//   - i (電流, 單位 A, 青綠)
+//   - w (功率, 單位 W, 紅)
+// Y 軸：左軸 yI 接 i + w；右軸 yV 接 v（兩軸可獨立 scale）
+// auto 旗標跟溫度一樣：
+//   auto=true  → 不設 min/max，讓 Chart.js 自動
+//   auto=false → 用 pw_axis[station].{v,iw}.min/max 鎖住
+// 資料源：onNewSample payload.pw 帶 {v, i, w}；初始從 /api/history/<st> 拉回補滿
+// =============================================================
+
+/**
+ * v6.2：取得「目前站位」的電力 Y 軸設定。
+ * 結構 { v:{min,max,auto}, iw:{min,max,auto} }。
+ */
+function getPwAxisForCurrent() {
+  const s = GX20State.settings;
+  const pwAxis = (s && s.pw_axis) || {};
+  const entry = pwAxis[currentStation];
+  if (entry && typeof entry === "object") {
+    return {
+      v:  { min: Number(entry.v.min),  max: Number(entry.v.max),  auto: !!entry.v.auto },
+      iw: { min: Number(entry.iw.min), max: Number(entry.iw.max), auto: !!entry.iw.auto },
+    };
+  }
+  return {
+    v:  { min: 0, max: 230, auto: false },
+    iw: { min: 0, max: 250, auto: false },
+  };
+}
+
+function applyPowerYAxisToChart() {
+  if (!pwChart) return;
+  const { v, iw } = getPwAxisForCurrent();
+  // V 軸 (右)
+  if (v.auto) {
+    delete pwChart.options.scales.yV.min;
+    delete pwChart.options.scales.yV.max;
+  } else {
+    if (Number.isFinite(v.min)) pwChart.options.scales.yV.min = v.min;
+    if (Number.isFinite(v.max)) pwChart.options.scales.yV.max = v.max;
+  }
+  // I,W 共用軸 (左)
+  if (iw.auto) {
+    delete pwChart.options.scales.yI.min;
+    delete pwChart.options.scales.yI.max;
+  } else {
+    if (Number.isFinite(iw.min)) pwChart.options.scales.yI.min = iw.min;
+    if (Number.isFinite(iw.max)) pwChart.options.scales.yI.max = iw.max;
+  }
+}
+
+function getPwColor(key) {
+  const s = GX20State.settings;
+  const c = (s && s.pw3335 && s.pw3335.colors) || {};
+  return c[key] || PW_COLORS_DEFAULT[key];
+}
+
+function buildPowerChart() {
+  const ctx = document.getElementById("pwChart").getContext("2d");
+  const settings = GX20State.settings;
+  const colors = {
+    v: getPwColor("V"),
+    i: getPwColor("I"),
+    w: getPwColor("W"),
+  };
+  const datasets = [
+    { label: "V", data: [], borderColor: colors.v, backgroundColor: colors.v, borderWidth: 0.9, pointRadius: 0.9, tension: 0.15, yAxisID: "yV", pointKey: "v" },
+    { label: "I", data: [], borderColor: colors.i, backgroundColor: colors.i, borderWidth: 0.9, pointRadius: 0.9, tension: 0.15, yAxisID: "yI", pointKey: "i" },
+    { label: "W", data: [], borderColor: colors.w, backgroundColor: colors.w, borderWidth: 0.9, pointRadius: 0.9, tension: 0.15, yAxisID: "yI", pointKey: "w" },
+  ];
+
+  if (pwChart) {
+    try { pwChart.stop(); } catch (_) { /* noop */ }
+    pwChart.destroy();
+    pwChart = null;
+  }
+  const c = chartColors();
+  const xMin = Number(settings.chart_x_minutes) || 0;
+  const xScale = {
+    type: "time",
+    time: {
+      tooltipFormat: "yyyy-MM-dd HH:mm:ss",
+      displayFormats: { minute: "HH:mm", hour: "MM-dd HH:mm", day: "MM-dd" },
+    },
+    ticks: { color: c.text, maxRotation: 0, autoSkipPadding: 20, source: "auto" },
+    grid:  { color: c.grid },
+  };
+  if (xMin > 0) {
+    const now = Date.now();
+    xScale.min = now - xMin * 60 * 1000;
+    xScale.max = now;
+  }
+  pwChart = new Chart(ctx, {
+    type: "line",
+    data: { datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      parsing: false,
+      normalized: true,
+      interaction: { mode: "nearest", intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: (ctx) => `${ctx.dataset.label}: ${ctx.parsed.y}` } },
+      },
+      scales: {
+        x: xScale,
+        yI: {
+          type: "linear",
+          position: "left",
+          ticks: { color: c.text },
+          grid:  { color: c.grid },
+          title: { display: true, text: "I (A) / W", color: c.text },
+        },
+        yV: {
+          type: "linear",
+          position: "right",
+          ticks: { color: c.text },
+          grid:  { drawOnChartArea: false },   // 右軸不畫背景格線，避免雙軸混淆
+          title: { display: true, text: "V (V)", color: c.text },
+        },
+      },
+    },
+  });
+  applyPowerYAxisToChart();
+  if (xMin > 0) {
+    const now = Date.now();
+    pwChart.options.scales.x.min = now - xMin * 60 * 1000;
+    pwChart.options.scales.x.max = now;
+  }
+}
 
 /**
  * 主題切換時只改 chart 顏色（不重建 chart、不清資料）。
@@ -487,6 +679,22 @@ function applyThemeToChart() {
   chart.update("none");
 }
 
+/**
+ * v6.2：套用主題到電力圖表（不重建、不清資料）。
+ */
+function applyThemeToPwChart() {
+  if (!pwChart) return;
+  const c = chartColors();
+  if (pwChart.options.scales.x.ticks) pwChart.options.scales.x.ticks.color = c.text;
+  if (pwChart.options.scales.x.grid)  pwChart.options.scales.x.grid.color  = c.grid;
+  if (pwChart.options.scales.yI.ticks) pwChart.options.scales.yI.ticks.color = c.text;
+  if (pwChart.options.scales.yI.grid)  pwChart.options.scales.yI.grid.color  = c.grid;
+  if (pwChart.options.scales.yI.title) pwChart.options.scales.yI.title.color = c.text;
+  if (pwChart.options.scales.yV.ticks) pwChart.options.scales.yV.ticks.color = c.text;
+  if (pwChart.options.scales.yV.title) pwChart.options.scales.yV.title.color = c.text;
+  pwChart.update("none");
+}
+
 // 監聽 body 的 data-theme 屬性變更（自訂事件）→ 套用新顏色
 // 用 rAF 避免在 chart 內部重繪過程中重入
 const _obs = new MutationObserver(() => {
@@ -496,6 +704,7 @@ const _obs = new MutationObserver(() => {
     themeRebuildPending = false;
     if (!chart) return;
     applyThemeToChart();
+    applyThemeToPwChart();   // v6.2：電力圖表一起套新顏色
   });
 });
 _obs.observe(document.body, { attributes: true, attributeFilter: ["data-theme"] });
@@ -530,6 +739,14 @@ async function loadHistory(gen) {
         if (v === null || v === undefined) continue;
         ds.data.push({ x: ts, y: v });
       }
+      // v6.2：電力 dataset 一起補
+      if (pwChart && pwChart.data.datasets) {
+        for (const ds of pwChart.data.datasets) {
+          const v = row[ds.pointKey];
+          if (v === null || v === undefined) continue;
+          ds.data.push({ x: ts, y: Number(v) });
+        }
+      }
     }
     // 補上 LTTB 降取樣（避免 dataset 太肥）
     for (const ds of chart.data.datasets) {
@@ -538,6 +755,7 @@ async function loadHistory(gen) {
       }
     }
     chart.update("none");
+    if (pwChart) pwChart.update("none");
   } catch (e) {
     if (myGen === loadGen) console.error("loadHistory:", e);
   }
@@ -556,10 +774,20 @@ function onNewSample(payload) {
     const v = payload.temps[idx];
     if (v !== null && v !== undefined) ds.data.push({ x: ts, y: v });
   }
+  // v6.2：電力 dataset
+  if (pwChart && payload.pw) {
+    for (const ds of pwChart.data.datasets) {
+      const v = payload.pw[ds.pointKey];
+      if (v !== null && v !== undefined) ds.data.push({ x: ts, y: Number(v) });
+    }
+  }
   pruneOldData();
+  prunePowerData();
   // X 軸動態：select 是分鐘錨點，隨時間流逝錨點也要跟著滑動
   slideXWindow();
+  slidePowerXWindow();
   chart.update("none");
+  if (pwChart) pwChart.update("none");
   // v6 游標模式：X 軸滑動後，游標線的 pixel 位置需要重算才能對齊
   if (typeof cursorState !== "undefined" && cursorState.mode === "cursor" && typeof layoutCursorBars === "function") {
     layoutCursorBars();
@@ -568,6 +796,7 @@ function onNewSample(payload) {
   // v6 游標模式：量測狀態下不更新右側表格（避免平均/最大/最小被即時溫度覆蓋）
   if (typeof cursorState !== "undefined" && cursorState.mode === "cursor") return;
   updateReadoutTable(payload);
+  updatePowerReadout(payload);
 }
 
 // 從 main.html 引入 lttb.js 後，全域 window.lttb 可用
@@ -598,6 +827,22 @@ function pruneOldData() {
 }
 
 /**
+ * v6.2：電力圖表 prune（跟 pruneOldData 同規則，套到 pwChart）。
+ * 電力只有 3 條線、點數量遠低於 20 條溫度線，但同一條規則以防爆量。
+ */
+function prunePowerData() {
+  if (!pwChart) return;
+  const xMin = Number(GX20State.settings.chart_x_minutes) || 0;
+  if (xMin > 0) {
+    const cutoff = Date.now() - xMin * 60 * 1000;
+    for (const ds of pwChart.data.datasets) {
+      while (ds.data.length > 2 && ds.data[0].x < cutoff) ds.data.shift();
+    }
+  }
+  // 電力線不另設點數上限（3 條 × 6 工位 = 18 條線，遠小於溫度 120 條）
+}
+
+/**
  * X 軸動態錨點：select 是分鐘數，錨點是「now - N*60s」。
  * 隨著時間流逝，必須把錨點跟著往右滑，否則使用者看到的有效區間會一直縮小。
  * Chart.js time scale 預設不會自動 slide min，這裡手動更新。
@@ -621,6 +866,23 @@ function slideXWindow() {
   // 只在真的改變時寫，避免觸發不必要的重算
   if (chart.options.scales.x.min !== newMin) chart.options.scales.x.min = newMin;
   if (chart.options.scales.x.max !== newMax) chart.options.scales.x.max = newMax;
+}
+
+/**
+ * v6.2：電力圖表 X 軸滑動視窗（跟 slideXWindow 同規則，套到 pwChart）。
+ */
+function slidePowerXWindow() {
+  if (!pwChart) return;
+  const xMin = Number(GX20State.settings.chart_x_minutes) || 0;
+  if (xMin <= 0) {
+    if (pwChart.options.scales.x.min !== undefined) pwChart.options.scales.x.min = undefined;
+    if (pwChart.options.scales.x.max !== undefined) pwChart.options.scales.x.max = undefined;
+    return;
+  }
+  const newMin = Date.now() - xMin * 60 * 1000;
+  const newMax = Date.now();
+  if (pwChart.options.scales.x.min !== newMin) pwChart.options.scales.x.min = newMin;
+  if (pwChart.options.scales.x.max !== newMax) pwChart.options.scales.x.max = newMax;
 }
 
 // ---------- 右側表格（名稱、讀值、速率、平均） ----------
@@ -651,6 +913,90 @@ function updateReadoutTable(payload) {
       <td>${fmt(a, 2)}</td>
     `;
     tbody.appendChild(tr);
+  }
+}
+
+// =============================================================
+// v6.2：電力表（PW3335）右側顯示
+//
+// live 模式：直接顯示 V / I / W 讀值
+// cursor 模式：改顯示區間 [tL, tR] 內的 avg / max / min
+// 表格欄位固定 3 欄 (項 / 單位 / 讀值)；量測模式時 cell 內容換成 (avg / max / min)
+// =============================================================
+
+/**
+ * 從 pwChart dataset 過濾出 [tL, tR] 區間內的資料，計算 avg/max/min。
+ * 若 pwChart 為 null（理論上不會）→ 回傳 nulls。
+ */
+function _computePwStat(tL, tR) {
+  if (!pwChart) return { v: null, i: null, w: null };
+  const stat = { v: { avg: null, max: null, min: null },
+                 i: { avg: null, max: null, min: null },
+                 w: { avg: null, max: null, min: null } };
+  for (const ds of pwChart.data.datasets) {
+    const vals = [];
+    for (const p of ds.data) {
+      if (p.x >= tL && p.x <= tR && p.y !== null && p.y !== undefined && !Number.isNaN(p.y)) {
+        vals.push(p.y);
+      }
+    }
+    if (vals.length > 0) {
+      stat[ds.pointKey].avg = vals.reduce((a, b) => a + b, 0) / vals.length;
+      stat[ds.pointKey].max = Math.max(...vals);
+      stat[ds.pointKey].min = Math.min(...vals);
+    }
+  }
+  return stat;
+}
+
+function updatePowerReadout(payload) {
+  const table = document.getElementById("pwReadoutTable");
+  if (!table) return;
+  const inCursor = (typeof cursorState !== "undefined" && cursorState.mode === "cursor");
+  // 顏色 swatch 始終跟設定走（不管模式）
+  const swV = document.getElementById("pwSwatchV");
+  const swI = document.getElementById("pwSwatchI");
+  const swW = document.getElementById("pwSwatchW");
+  if (swV) swV.style.background = getPwColor("V");
+  if (swI) swI.style.background = getPwColor("I");
+  if (swW) swW.style.background = getPwColor("W");
+
+  // 量測模式：cell 內容換成 (avg / max / min)
+  if (inCursor) {
+    if (!cursorState.tsLeft || !cursorState.tsRight) return;
+    const stat = _computePwStat(cursorState.tsLeft.getTime(), cursorState.tsRight.getTime());
+    table.classList.add("cursor-mode");
+    const digits = { v: 2, i: 3, w: 2 };
+    for (const key of ["v", "i", "w"]) {
+      const cell = table.querySelector(`td.pw-cell[data-key="${key}"]`);
+      if (!cell) continue;
+      const s = stat[key];
+      const parts = [];
+      if (s.avg != null) parts.push(`平均 ${s.avg.toFixed(digits[key])}`);
+      if (s.max != null) parts.push(`最大 ${s.max.toFixed(digits[key])}`);
+      if (s.min != null) parts.push(`最小 ${s.min.toFixed(digits[key])}`);
+      cell.textContent = parts.length > 0 ? parts.join(" / ") : "—";
+      cell.className = "pw-cell cell-avg";
+    }
+    return;
+  }
+
+  // live 模式
+  table.classList.remove("cursor-mode");
+  if (!payload || !payload.pw) {
+    for (const key of ["v", "i", "w"]) {
+      const cell = table.querySelector(`td.pw-cell[data-key="${key}"]`);
+      if (cell) { cell.textContent = "—"; cell.className = "pw-cell"; }
+    }
+    return;
+  }
+  const digits = { v: 2, i: 3, w: 2 };
+  for (const key of ["v", "i", "w"]) {
+    const cell = table.querySelector(`td.pw-cell[data-key="${key}"]`);
+    if (!cell) continue;
+    const v = payload.pw[key];
+    cell.textContent = (v === null || v === undefined) ? "—" : Number(v).toFixed(digits[key]);
+    cell.className = "pw-cell";
   }
 }
 
@@ -804,6 +1150,9 @@ function setCursorMode(mode) {
   const info      = document.getElementById("cursorInfo");
   const table     = document.getElementById("readoutTable");
 
+  // 切換 body class 控制電力圖表顯示/隱藏（CSS 內綁定）
+  document.body.classList.toggle("cursor-mode", mode === "cursor");
+
   // 切換按鈕 active 樣式
   if (mode === "live") {
     liveBtn.classList.add("active");
@@ -819,8 +1168,10 @@ function setCursorMode(mode) {
     // 表格立即恢復即時模式（用當前 payload）
     if (chart && chart._lastPayload) {
       rerenderLiveReadout();
+      updatePowerReadout(chart._lastPayload);
     } else {
       updateReadoutTable(null);
+      updatePowerReadout(null);
     }
   } else {
     cursorBtn.classList.add("active");
@@ -838,6 +1189,8 @@ function setCursorMode(mode) {
       layoutCursorBars();
       updateCursorInfo();
     }
+    // v6.2：量測模式也更新電力表
+    updatePowerReadout(null);
   }
 }
 
@@ -939,6 +1292,7 @@ function bindCursorDrag(id) {
     layoutCursorBars();
     updateCursorInfo();           // v6.1.2: 拖曳時同步更新「區間」資訊
     updateReadoutFromCursor();
+    updatePowerReadout(null);     // v6.2：拖曳時也更新電力表
     // v6.1.3: 移除 scheduleCoverageRequest()，不再打 /api/cursor/coverage
   };
   const onUp = (e) => {

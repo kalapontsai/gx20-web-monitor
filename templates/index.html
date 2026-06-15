@@ -33,15 +33,23 @@
 
 <main>
   <section class="chart-area">
-    <canvas id="chart"></canvas>
-    <!-- 游標模式 overlay：只在量測狀態下顯示（由 JS 加 .active 切換） -->
-    <div id="cursorOverlay" class="cursor-overlay" aria-hidden="true">
-      <div id="cursorRange" class="cursor-range" hidden></div>
-      <div id="cursorLeft"  class="cursor-bar cursor-left"  data-side="left"  hidden>
-        <span class="cursor-time" id="cursorLeftTime"></span>
+    <div class="chart-stack">
+      <div class="chart-pane chart-temp">
+        <canvas id="chart"></canvas>
+        <!-- 游標模式 overlay：只在量測狀態下顯示（由 JS 加 .active 切換） -->
+        <div id="cursorOverlay" class="cursor-overlay" aria-hidden="true">
+          <div id="cursorRange" class="cursor-range" hidden></div>
+          <div id="cursorLeft"  class="cursor-bar cursor-left"  data-side="left"  hidden>
+            <span class="cursor-time" id="cursorLeftTime"></span>
+          </div>
+          <div id="cursorRight" class="cursor-bar cursor-right" data-side="right" hidden>
+            <span class="cursor-time" id="cursorRightTime"></span>
+          </div>
+        </div>
       </div>
-      <div id="cursorRight" class="cursor-bar cursor-right" data-side="right" hidden>
-        <span class="cursor-time" id="cursorRightTime"></span>
+      <!-- v6.2：電力圖表（高度 30%） -->
+      <div class="chart-pane chart-pw" id="pwPane">
+        <canvas id="pwChart"></canvas>
       </div>
     </div>
   </section>
@@ -109,6 +117,23 @@
         <th id="avgTh">平均 (°C/1min)</th>
       </tr></thead>
       <tbody></tbody>
+    </table>
+    <!-- v6.2：電力表（V/I/W 3 欄；只在 live 模式有值，cursor 模式顯示平均/最大/最小） -->
+    <div class="readout-header" style="margin-top:12px;">
+      <h3>PW3335 電力</h3>
+      <span id="pwConnBadge" class="pw-conn-badge" title="PW3335 連線狀態">—</span>
+    </div>
+    <table id="pwReadoutTable">
+      <thead><tr>
+        <th>項</th>
+        <th>單位</th>
+        <th>讀值</th>
+      </tr></thead>
+      <tbody>
+        <tr data-key="v"><td><span class="swatch" id="pwSwatchV"></span>V</td><td>V</td><td class="pw-cell" data-key="v">—</td></tr>
+        <tr data-key="i"><td><span class="swatch" id="pwSwatchI"></span>I</td><td>A</td><td class="pw-cell" data-key="i">—</td></tr>
+        <tr data-key="w"><td><span class="swatch" id="pwSwatchW"></span>W</td><td>W</td><td class="pw-cell" data-key="w">—</td></tr>
+      </tbody>
     </table>
   </aside>
 </main>

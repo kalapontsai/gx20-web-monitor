@@ -118,8 +118,28 @@ main {
   padding: 8px;
   border: 1px solid var(--border);
   box-shadow: var(--shadow);
+  /* v6.2：內部用 flex column 把上下面板堆起來 */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
-#chart { width: 100% !important; height: 100% !important; }
+.chart-stack {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.chart-pane {
+  position: relative;
+  width: 100%;
+  min-height: 0;
+}
+.chart-temp { flex: 7 1 0; }   /* 溫度 70% */
+.chart-pw   { flex: 3 1 0; border-top: 1px solid var(--border); }   /* 電力 30% */
+/* 量測模式（游標開啟）→ 電力圖表隱藏，沿用「輔助 UI 在即時模式才顯示」偏好 */
+body.cursor-mode .chart-pw { display: none; }
+body.cursor-mode .chart-temp { flex: 1 1 0; }
+#chart, #pwChart { width: 100% !important; height: 100% !important; display: block; }
 
 .readout {
   background: var(--surface);
@@ -472,4 +492,98 @@ main {
 #readoutTable.cursor-mode tbody tr td.cell-min {
   color: #0d6efd;
   font-weight: 500;
+}
+
+/* === v6.2：電力表（PW3335） === */
+
+#pwReadoutTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  margin-top: 4px;
+}
+#pwReadoutTable th, #pwReadoutTable td {
+  padding: 4px 4px;
+  text-align: right;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+#pwReadoutTable th { background: var(--table-head); color: var(--text); font-size: 11px; }
+#pwReadoutTable td:first-child,
+#pwReadoutTable th:first-child { text-align: left; }
+#pwReadoutTable td:nth-child(2) { color: var(--text-dim); text-align: left; }
+#pwReadoutTable td.pw-cell { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+#pwReadoutTable.cursor-mode td.pw-cell.cell-avg,
+#pwReadoutTable.cursor-mode td.pw-cell.cell-max,
+#pwReadoutTable.cursor-mode td.pw-cell.cell-min {
+  color: #0d6efd;
+  font-weight: 500;
+}
+
+.pw-conn-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+.pw-conn-badge.on  { background: var(--dot-on);  color: #0a2a0a; border-color: var(--dot-on); }
+.pw-conn-badge.off { background: var(--dot-off); color: #fff;    border-color: var(--dot-off); }
+.pw-conn-badge.disabled { background: var(--surface-2); color: var(--text-mute); }
+
+/* === v6.2：設定頁 PW3335 區塊 === */
+
+.pw-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px;
+  background: var(--surface-2);
+}
+.pw-grid-row {
+  display: grid;
+  grid-template-columns: 60px 1fr 70px;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+.pw-grid-row label.station-label { color: var(--text-dim); font-weight: 600; }
+.pw-grid-row input.pw-ip-inp {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 3px 6px;
+  font: inherit;
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.pw-grid-row .pw-remote-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.pw-grid-row .pw-remote-wrap input[type="checkbox"] { width: 14px; height: 14px; }
+
+.pw-color-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.pw-color-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--surface-2);
+  padding: 4px 10px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  font-size: 13px;
+  color: var(--text-dim);
 }

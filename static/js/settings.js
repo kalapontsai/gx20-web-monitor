@@ -39,6 +39,11 @@ async function init() {
   document.getElementById("retention_days").value   = settings.retention_days;
   document.getElementById("max_points").value       = settings.max_points;
 
+  // v6.2：PW3335 + 電力 Y 軸
+  renderPw3335();
+  renderPwAxisTabs();
+  fillPwAxisFields(currentStation);
+
   // v6：Y 軸範圍 per-station。預設填入當前站位
   renderYAxisTabs();
   fillYAxisFields(currentStation);
@@ -58,8 +63,18 @@ async function init() {
   bindField("retention_days",  (v) => GX20State.update("retention_days", Math.max(1, Math.min(30, parseInt(v, 10) || 7))));
   bindField("max_points",      (v) => GX20State.update("max_points", Math.max(200, Math.min(10000, parseInt(v, 10) || 2000))));
 
+  // v6.2：PW3335 port
+  bindField("pw3335_port",     (v) => {
+    const cur = GX20State.settings.pw3335 || {};
+    const next = Object.assign({}, cur, { port: parseInt(v, 10) || 3300 });
+    GX20State.update("pw3335", next);
+  });
+
   // v6：Y 軸三欄位綁定到「目前站位」的 y_axis entry
   bindYAxisFields();
+
+  // v6.2：電力 Y 軸欄位綁定
+  bindPwAxisFields();
 
   // Debug log 切換 → 直接 POST /api/debug（不透過 GX20State）
   document.getElementById("debugLogEnabled").addEventListener("change", async (e) => {
@@ -340,3 +355,185 @@ function bindYAxisFields() {
 }
 
 window.addEventListener("DOMContentLoaded", init);
+
+// =============================================================
+// v6.2：PW3335 區塊 + 電力 Y 軸
+//   - renderPw3335()      造 6 工位 IP + 啟用 checkbox 表格
+//   - renderPwAxisTabs()  6 工位 tab；切換時只動電力 Y 軸欄位
+//   - fillPwAxisFields()  從 settings.pw_axis[st] 把值填進去
+//   - bindPwAxisFields()  input/change → GX20State.update("pw_axis", ...)
+//   - 電力線顏色 (V/I/W) 3 個 color-btn 綁 colorpicker
+// =============================================================
+
+function renderPw3335() {
+  const settings = GX20State.settings;
+  const pw = settings.pw3335 || { port: 3300, hosts: {}, remote: {}, colors: {} };
+  // port
+  document.getElementById("pw3335_port").value = pw.port || 3300;
+  // 6 工位 IP + 啟用
+  const grid = document.getElementById("pwGrid");
+  grid.innerHTML = "";
+  STATIONS.forEach(s => {
+    const row = document.createElement("div");
+    row.className = "pw-grid-row";
+    const lab = document.createElement("label");
+    lab.className = "station-label";
+    lab.textContent = s;
+    const ip = document.createElement("input");
+    ip.type = "text";
+    ip.className = "pw-ip-inp";
+    ip.value = (pw.hosts && pw.hosts[s]) || "";
+    ip.placeholder = "192.168.1.x";
+    ip.addEventListener("input", () => {
+      const cur = GX20State.settings.pw3335 || {};
+      const hosts = Object.assign({}, (cur.hosts || {}));
+      hosts[s] = ip.value.trim();
+      GX20State.update("pw3335", Object.assign({}, cur, { hosts }));
+    });
+    const wrap = document.createElement("label");
+    wrap.className = "pw-remote-wrap";
+    const chk = document.createElement("input");
+    chk.type = "checkbox";
+    chk.checked = !!(pw.remote && pw.remote[s]);
+    chk.addEventListener("change", () => {
+      const cur = GX20State.settings.pw3335 || {};
+      const remote = Object.assign({}, (cur.remote || {}));
+      remote[s] = !!chk.checked;
+      GX20State.update("pw3335", Object.assign({}, cur, { remote }));
+    });
+    wrap.appendChild(chk);
+    const wrapTxt = document.createElement("span");
+    wrapTxt.textContent = "啟用";
+    wrap.appendChild(wrapTxt);
+    row.appendChild(lab);
+    row.appendChild(ip);
+    row.appendChild(wrap);
+    grid.appendChild(row);
+  });
+  // 3 個電力線顏色
+  for (const key of ["V", "I", "W"]) {
+    const btn = document.getElementById("pwColor" + key);
+    if (!btn) continue;
+    const init = (pw.colors && pw.colors[key]) || "#888888";
+    btn.dataset.color = init;
+    btn.style.background = init;
+    cp.attach(btn, init, (newColor) => {
+      const cur = GX20State.settings.pw3335 || {};
+      const colors = Object.assign({}, (cur.colors || {}));
+      colors[key] = newColor;
+      GX20State.update("pw3335", Object.assign({}, cur, { colors }));
+    });
+  }
+}
+
+function renderPwAxisTabs() {
+  const tabs = document.getElementById("pwAxisStationTabs");
+  if (!tabs) return;
+  tabs.innerHTML = "";
+  STATIONS.forEach(s => {
+    const b = document.createElement("button");
+    b.textContent = s;
+    b.dataset.station = s;
+    if (s === currentStation) b.classList.add("active");
+    b.addEventListener("click", () => {
+      // 不改 currentStation（避免把溫度 Y 軸 tab 跟接點 tab 一起切走）
+      // 只在電力 Y 軸區塊內部追蹤
+      tabs.querySelectorAll("button").forEach(x => x.classList.toggle("active", x.dataset.station === s));
+      fillPwAxisFields(s);
+    });
+    tabs.appendChild(b);
+  });
+}
+
+function fillPwAxisFields(st) {
+  const settings = GX20State.settings;
+  const entry = (settings.pw_axis && settings.pw_axis[st]) || { v: { min: 0, max: 230, auto: false }, iw: { min: 0, max: 250, auto: false } };
+  const vMinEl  = document.querySelector('[data-pwaxis-field="v-min"]');
+  const vMaxEl  = document.querySelector('[data-pwaxis-field="v-max"]');
+  const iwMinEl = document.querySelector('[data-pwaxis-field="iw-min"]');
+  const iwMaxEl = document.querySelector('[data-pwaxis-field="iw-max"]');
+  const vAutoEl  = document.querySelector('[data-pwaxis-field="v-auto"]');
+  const iwAutoEl = document.querySelector('[data-pwaxis-field="iw-auto"]');
+  if (!vMinEl || !vMaxEl || !iwMinEl || !iwMaxEl || !vAutoEl || !iwAutoEl) return;
+  vMinEl.value  = entry.v.min;
+  vMaxEl.value  = entry.v.max;
+  iwMinEl.value = entry.iw.min;
+  iwMaxEl.value = entry.iw.max;
+  vAutoEl.checked  = !!entry.v.auto;
+  iwAutoEl.checked = !!entry.iw.auto;
+  // 動態縮放啟用時 → 對應欄位半透明
+  applyPwAxisAutoState(entry.v.auto, entry.iw.auto);
+}
+
+function applyPwAxisAutoState(vAuto, iwAuto) {
+  const vMinEl  = document.querySelector('[data-pwaxis-field="v-min"]');
+  const vMaxEl  = document.querySelector('[data-pwaxis-field="v-max"]');
+  const iwMinEl = document.querySelector('[data-pwaxis-field="iw-min"]');
+  const iwMaxEl = document.querySelector('[data-pwaxis-field="iw-max"]');
+  if (vMinEl)  { vMinEl.disabled  = vAuto;  vMinEl.style.opacity  = vAuto  ? "0.5" : "1"; }
+  if (vMaxEl)  { vMaxEl.disabled  = vAuto;  vMaxEl.style.opacity  = vAuto  ? "0.5" : "1"; }
+  if (iwMinEl) { iwMinEl.disabled = iwAuto; iwMinEl.style.opacity = iwAuto ? "0.5" : "1"; }
+  if (iwMaxEl) { iwMaxEl.disabled = iwAuto; iwMaxEl.style.opacity = iwAuto ? "0.5" : "1"; }
+}
+
+function bindPwAxisFields() {
+  const vMinEl  = document.querySelector('[data-pwaxis-field="v-min"]');
+  const vMaxEl  = document.querySelector('[data-pwaxis-field="v-max"]');
+  const iwMinEl = document.querySelector('[data-pwaxis-field="iw-min"]');
+  const iwMaxEl = document.querySelector('[data-pwaxis-field="iw-max"]');
+  const vAutoEl  = document.querySelector('[data-pwaxis-field="v-auto"]');
+  const iwAutoEl = document.querySelector('[data-pwaxis-field="iw-auto"]');
+  if (!vMinEl || !vMaxEl || !iwMinEl || !iwMaxEl || !vAutoEl || !iwAutoEl) return;
+
+  // 取得目前 tab 的站位（電力 Y 軸 tab 自己的，不一定等同 currentStation）
+  let activeStation = STATIONS[0];
+  const tabs = document.getElementById("pwAxisStationTabs");
+  function getActivePwAxisStation() {
+    if (tabs) {
+      const a = tabs.querySelector("button.active");
+      if (a) return a.dataset.station;
+    }
+    return activeStation;
+  }
+  if (tabs) {
+    tabs.addEventListener("click", (e) => {
+      if (e.target && e.target.dataset && e.target.dataset.station) {
+        activeStation = e.target.dataset.station;
+      }
+    });
+  }
+
+  const writeBack = (patch) => {
+    const s = GX20State.settings;
+    if (!s.pw_axis) s.pw_axis = {};
+    const st = getActivePwAxisStation();
+    if (!s.pw_axis[st]) s.pw_axis[st] = { v: { min: 0, max: 230, auto: false }, iw: { min: 0, max: 250, auto: false } };
+    const cur = s.pw_axis[st];
+    if ("v_min"  in patch) cur.v.min  = patch.v_min;
+    if ("v_max"  in patch) cur.v.max  = patch.v_max;
+    if ("iw_min" in patch) cur.iw.min = patch.iw_min;
+    if ("iw_max" in patch) cur.iw.max = patch.iw_max;
+    if ("v_auto"  in patch) cur.v.auto  = patch.v_auto;
+    if ("iw_auto" in patch) cur.iw.auto = patch.iw_auto;
+    GX20State.update("pw_axis", s.pw_axis);
+  };
+
+  vMinEl.addEventListener("input",  () => writeBack({ v_min: parseFloat(vMinEl.value)  || 0 }));
+  vMinEl.addEventListener("change", () => writeBack({ v_min: parseFloat(vMinEl.value)  || 0 }));
+  vMaxEl.addEventListener("input",  () => writeBack({ v_max: parseFloat(vMaxEl.value)  || 0 }));
+  vMaxEl.addEventListener("change", () => writeBack({ v_max: parseFloat(vMaxEl.value)  || 0 }));
+  iwMinEl.addEventListener("input", () => writeBack({ iw_min: parseFloat(iwMinEl.value) || 0 }));
+  iwMinEl.addEventListener("change",() => writeBack({ iw_min: parseFloat(iwMinEl.value) || 0 }));
+  iwMaxEl.addEventListener("input", () => writeBack({ iw_max: parseFloat(iwMaxEl.value) || 0 }));
+  iwMaxEl.addEventListener("change",() => writeBack({ iw_max: parseFloat(iwMaxEl.value) || 0 }));
+  vAutoEl.addEventListener("change", () => {
+    const v = vAutoEl.checked;
+    applyPwAxisAutoState(v, iwAutoEl.checked);
+    writeBack({ v_auto: v });
+  });
+  iwAutoEl.addEventListener("change", () => {
+    const w = iwAutoEl.checked;
+    applyPwAxisAutoState(vAutoEl.checked, w);
+    writeBack({ iw_auto: w });
+  });
+}

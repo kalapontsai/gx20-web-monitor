@@ -34,6 +34,32 @@
     </div>
   </div>
 
+  <!-- ====== 1.5 PW3335 電力計 (v6.2) ====== -->
+  <h2>1.5 PW3335 電力計 <span style="font-size:12px; color: var(--text-mute);">（6 工位各一台，未啟用者寫入 0）</span></h2>
+  <div class="card">
+    <div class="row">
+      <label>Port (6 台共用)</label>
+      <input type="number" id="pw3335_port" value="3300" min="1" max="65535">
+    </div>
+    <div class="row" style="flex-direction:column; align-items:stretch; gap:6px;">
+      <label style="min-width:auto;">6 工位 IP / 啟用</label>
+      <div class="pw-grid" id="pwGrid"></div>
+    </div>
+    <div class="row" style="margin-top:6px; flex-direction:column; align-items:stretch; gap:6px;">
+      <label style="min-width:auto;">電力線顏色</label>
+      <div class="pw-color-row">
+        <div class="pw-color-cell"><span>V</span><button type="button" class="color-btn" id="pwColorV" data-pw-color="V"></button></div>
+        <div class="pw-color-cell"><span>I</span><button type="button" class="color-btn" id="pwColorI" data-pw-color="I"></button></div>
+        <div class="pw-color-cell"><span>W</span><button type="button" class="color-btn" id="pwColorW" data-pw-color="W"></button></div>
+      </div>
+    </div>
+    <p style="color: var(--text-mute); font-size: 12px; margin: 4px 0 0;">
+      ※ IP 預設沿用桌面版 192.168.1.{2..7}（工位1~6）。<br>
+      ※ 「啟用」打勾 → 該工位實際去抓電力值；未勾 → 一律寫 0（依需求）。<br>
+      ※ 顏色參考溫度線的調色盤機制。
+    </p>
+  </div>
+
   <!-- ====== 2. Y 軸範圍（v6：per-station 設定）====== -->
   <h2>2. Y 軸範圍 <span style="font-size:12px; color: var(--text-mute);">（每工位各自一組）</span></h2>
   <div class="card">
@@ -62,6 +88,45 @@
   <!-- ====== 3. 計算時間長度（v3: 僅保留預設值，主畫面下拉調整）====== -->
   <!-- v3：升降速率 / 平均的「計算分鐘數」改在主畫面「最新讀值」區塊以 select 選取 -->
   <!-- 此區原本的兩個 input 已移除，設定頁不再提供（主畫面下拉後即生效） -->
+
+  <!-- ====== 2.5 電力 Y 軸範圍 (v6.2) ====== -->
+  <h2>2.5 電力 Y 軸範圍 <span style="font-size:12px; color: var(--text-mute);">（每工位各自一組；I/W 共用，V 獨立）</span></h2>
+  <div class="card">
+    <div class="station-tabs" id="pwAxisStationTabs"></div>
+    <div class="row">
+      <label>V 最小值</label>
+      <input type="number" id="pw_v_min" value="0" step="1" data-pwaxis-field="v-min">
+    </div>
+    <div class="row">
+      <label>V 最大值</label>
+      <input type="number" id="pw_v_max" value="230" step="1" data-pwaxis-field="v-max">
+    </div>
+    <div class="row">
+      <label>I,W 最小值</label>
+      <input type="number" id="pw_iw_min" value="0" step="1" data-pwaxis-field="iw-min">
+    </div>
+    <div class="row">
+      <label>I,W 最大值</label>
+      <input type="number" id="pw_iw_max" value="250" step="1" data-pwaxis-field="iw-max">
+    </div>
+    <div class="row">
+      <label>自動縮放</label>
+      <label class="all-toggle-label">
+        <input type="checkbox" id="pw_v_auto" data-pwaxis-field="v-auto">
+        <span>勾選後由 Chart.js 依 V 資料自動決定右軸範圍</span>
+      </label>
+    </div>
+    <div class="row">
+      <label>　</label>
+      <label class="all-toggle-label">
+        <input type="checkbox" id="pw_iw_auto" data-pwaxis-field="iw-auto">
+        <span>勾選後由 Chart.js 依 I/W 資料自動決定左軸範圍</span>
+      </label>
+    </div>
+    <p style="color: var(--text-mute); font-size: 12px; margin: 4px 0 0;">
+      ※ 切換上方工位 tab 即可設定不同工位的電力 Y 軸。預設 V(0,230) / I,W(0,250)。
+    </p>
+  </div>
 
   <!-- ====== 3.6 圖表 X 軸視窗（v3: 改在主畫面控制）====== -->
   <!-- 此區下放至主畫面「最新讀值」表頭，與升降速率 / 平均選單並列 -->
