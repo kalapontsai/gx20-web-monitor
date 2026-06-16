@@ -305,7 +305,8 @@ def load_settings() -> dict:
                     merged_pw["colors"][key] = v.strip()
         out["pw3335"] = merged_pw
 
-    # v7：pw_axis = {station: {v:{min,max,auto}, iw:{min,max,auto}}}
+    # v7：pw_axis = {station: {v:{min,max,auto}, i:{min,max,auto}, w:{min,max,auto}}}
+    # 向後相容：舊資料的 "iw" 會自動展開成 i + w 兩軸（預設值），不會讓現有使用者設定炸掉。
     pw_axis_raw = config.from_json(raw.get("pw_axis"), default=defaults["pw_axis"])
     if isinstance(pw_axis_raw, dict):
         merged_pw_axis = dict(defaults["pw_axis"])
@@ -313,19 +314,31 @@ def load_settings() -> dict:
             entry = pw_axis_raw.get(st)
             if not isinstance(entry, dict):
                 continue
-            cur = dict(merged_pw_axis[st])  # copy of v / iw sub-entries
-            for axis_key in ("v", "iw"):
-                sub = entry.get(axis_key)
+            cur = {k: dict(v) for k, v in merged_pw_axis[st].items()}  # deep copy of v / i / w
+
+            def _merge_axis(target_key: str, sub: dict):
                 if not isinstance(sub, dict):
-                    continue
+                    return
                 try:
-                    cur[axis_key] = {
-                        "min":  float(sub.get("min",  merged_pw_axis[st][axis_key]["min"])),
-                        "max":  float(sub.get("max",  merged_pw_axis[st][axis_key]["max"])),
-                        "auto": bool(sub.get("auto", merged_pw_axis[st][axis_key]["auto"])),
+                    cur[target_key] = {
+                        "min":  float(sub.get("min",  merged_pw_axis[st][target_key]["min"])),
+                        "max":  float(sub.get("max",  merged_pw_axis[st][target_key]["max"])),
+                        "auto": bool(sub.get("auto", merged_pw_axis[st][target_key]["auto"])),
                     }
                 except (TypeError, ValueError):
                     pass
+
+            # 新結構：v / i / w
+            for axis_key in ("v", "i", "w"):
+                if axis_key in entry:
+                    _merge_axis(axis_key, entry[axis_key])
+
+            # 舊結構："iw" 共用軸 → 展開到 i + w（用 iw 自己的值覆蓋兩軸的 min/max/auto）
+            if "iw" in entry:
+                iw_sub = entry["iw"]
+                _merge_axis("i", iw_sub)
+                _merge_axis("w", iw_sub)
+
             merged_pw_axis[st] = cur
         out["pw_axis"] = merged_pw_axis
 
@@ -363,10 +376,15 @@ def save_settings(patch: dict) -> None:
                     if not isinstance(cur_st, dict):
                         cur_st = config.default_settings()["pw_axis"][st]
                     new_st = dict(cur_st)
-                    for axis_key in ("v", "iw"):
+                    # 新結構：v / i / w
+                    for axis_key in ("v", "i", "w"):
                         sub = val.get(axis_key)
                         if isinstance(sub, dict):
                             new_st[axis_key] = dict(sub)
+                    # 向後相容：舊 "iw" 寫入 → 展開到 i + w
+                    if "iw" in val and isinstance(val["iw"], dict):
+                        new_st["i"] = dict(val["iw"])
+                        new_st["w"] = dict(val["iw"])
                     existing[st] = new_st
             storage.set_setting("pw_axis", config.to_json(existing))
         elif k == "pw3335" and isinstance(v, dict):

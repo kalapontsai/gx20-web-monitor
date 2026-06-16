@@ -90,7 +90,7 @@
   <!-- 此區原本的兩個 input 已移除，設定頁不再提供（主畫面下拉後即生效） -->
 
   <!-- ====== 2.5 電力 Y 軸範圍 (v7) ====== -->
-  <h2>2.5 電力 Y 軸範圍 <span style="font-size:12px; color: var(--text-mute);">（每工位各自一組；I/W 共用，V 獨立）</span></h2>
+  <h2>2.5 電力 Y 軸範圍 <span style="font-size:12px; color: var(--text-mute);">（每工位各自一組；V 在右、I 與 W 各一左軸）</span></h2>
   <div class="card">
     <div class="station-tabs" id="pwAxisStationTabs"></div>
     <div class="row">
@@ -102,29 +102,44 @@
       <input type="number" id="pw_v_max" value="230" step="1" data-pwaxis-field="v-max">
     </div>
     <div class="row">
-      <label>I,W 最小值</label>
-      <input type="number" id="pw_iw_min" value="0" step="1" data-pwaxis-field="iw-min">
+      <label>I 最小值 (A)</label>
+      <input type="number" id="pw_i_min" value="0" step="0.1" data-pwaxis-field="i-min">
     </div>
     <div class="row">
-      <label>I,W 最大值</label>
-      <input type="number" id="pw_iw_max" value="250" step="1" data-pwaxis-field="iw-max">
+      <label>I 最大值 (A)</label>
+      <input type="number" id="pw_i_max" value="5" step="0.1" data-pwaxis-field="i-max">
     </div>
     <div class="row">
-      <label>自動縮放</label>
+      <label>W 最小值 (W)</label>
+      <input type="number" id="pw_w_min" value="0" step="1" data-pwaxis-field="w-min">
+    </div>
+    <div class="row">
+      <label>W 最大值 (W)</label>
+      <input type="number" id="pw_w_max" value="250" step="1" data-pwaxis-field="w-max">
+    </div>
+    <div class="row">
+      <label>自動縮放 V</label>
       <label class="all-toggle-label">
         <input type="checkbox" id="pw_v_auto" data-pwaxis-field="v-auto">
         <span>勾選後由 Chart.js 依 V 資料自動決定右軸範圍</span>
       </label>
     </div>
     <div class="row">
-      <label>　</label>
+      <label>自動縮放 I</label>
       <label class="all-toggle-label">
-        <input type="checkbox" id="pw_iw_auto" data-pwaxis-field="iw-auto">
-        <span>勾選後由 Chart.js 依 I/W 資料自動決定左軸範圍</span>
+        <input type="checkbox" id="pw_i_auto" data-pwaxis-field="i-auto">
+        <span>勾選後由 Chart.js 依 I 資料自動決定左軸 I 範圍</span>
+      </label>
+    </div>
+    <div class="row">
+      <label>自動縮放 W</label>
+      <label class="all-toggle-label">
+        <input type="checkbox" id="pw_w_auto" data-pwaxis-field="w-auto">
+        <span>勾選後由 Chart.js 依 W 資料自動決定左軸 W 範圍</span>
       </label>
     </div>
     <p style="color: var(--text-mute); font-size: 12px; margin: 4px 0 0;">
-      ※ 切換上方工位 tab 即可設定不同工位的電力 Y 軸。預設 V(0,230) / I,W(0,250)。
+      ※ 切換上方工位 tab 即可設定不同工位的電力 Y 軸。預設 V(0,230) / I(0,5) / W(0,250)。
     </p>
   </div>
 

@@ -36,9 +36,10 @@ DEFAULT_PW_COLORS = {
 # 電力 Y 軸預設範圍（依使用者 2026-06-15 確認）
 DEFAULT_PW_V_MIN  = 0
 DEFAULT_PW_V_MAX  = 230
-DEFAULT_PW_IW_MIN = 0
-DEFAULT_PW_IW_MAX_I = 5
-DEFAULT_PW_IW_MAX_W = 250
+DEFAULT_PW_I_MIN  = 0
+DEFAULT_PW_I_MAX  = 5
+DEFAULT_PW_W_MIN  = 0
+DEFAULT_PW_W_MAX  = 250
 DEFAULT_PW_AUTO = False
 
 # ---------- 圖表 ----------
@@ -108,10 +109,11 @@ def default_pw3335() -> dict:
 def default_pw_axis() -> dict:
     """電力 Y 軸 per-station。
     結構：{工位名: {
-        "v":  {"min", "max", "auto"},  # 電壓軸（畫在右側）
-        "iw": {"min", "max", "auto"},  # 電流+功率共用軸（畫在左側）
+        "v": {"min", "max", "auto"},  # 電壓軸（畫在右側）
+        "i": {"min", "max", "auto"},  # 電流軸（畫在左側）
+        "w": {"min", "max", "auto"},  # 功率軸（畫在左側，靠右 offset 推開）
     }}
-    預設依使用者 2026-06-15 決定：V(0,230)/I(0,5)/W(0,250)，auto=False。
+    預設依使用者 2026-06-16 決定：V(0,230) / I(0,5) / W(0,250)，auto=False。
     """
     return {
         s: {
@@ -120,9 +122,14 @@ def default_pw_axis() -> dict:
                 "max":  DEFAULT_PW_V_MAX,
                 "auto": DEFAULT_PW_AUTO,
             },
-            "iw": {
-                "min":  DEFAULT_PW_IW_MIN,
-                "max":  DEFAULT_PW_IW_MAX_W,   # I/W 共用；I 的 5A 會被壓扁，但 W 範圍較大為主
+            "i": {
+                "min":  DEFAULT_PW_I_MIN,
+                "max":  DEFAULT_PW_I_MAX,
+                "auto": DEFAULT_PW_AUTO,
+            },
+            "w": {
+                "min":  DEFAULT_PW_W_MIN,
+                "max":  DEFAULT_PW_W_MAX,
                 "auto": DEFAULT_PW_AUTO,
             },
         }
@@ -173,8 +180,10 @@ __all__ = [
     "DEFAULT_Y_MIN", "DEFAULT_Y_MAX", "DEFAULT_Y_AUTO",
     "DEFAULT_THEME", "DEFAULT_RETENTION_DAYS", "DEFAULT_MAX_POINTS", "DEFAULT_CHART_X_MINUTES", "RING_BUFFER_SIZE",
     "DEFAULT_PW3335_PORT", "DEFAULT_PW3335_HOSTS", "DEFAULT_PW_COLORS",
-    "DEFAULT_PW_V_MIN", "DEFAULT_PW_V_MAX", "DEFAULT_PW_IW_MIN",
-    "DEFAULT_PW_IW_MAX_I", "DEFAULT_PW_IW_MAX_W", "DEFAULT_PW_AUTO",
+    "DEFAULT_PW_V_MIN", "DEFAULT_PW_V_MAX",
+    "DEFAULT_PW_I_MIN", "DEFAULT_PW_I_MAX",
+    "DEFAULT_PW_W_MIN", "DEFAULT_PW_W_MAX",
+    "DEFAULT_PW_AUTO",
     "default_visibility", "default_alias", "default_color", "default_y_axis",
     "default_pw3335", "default_pw_axis",
     "default_settings",

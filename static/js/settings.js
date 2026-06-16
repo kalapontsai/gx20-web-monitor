@@ -447,43 +447,65 @@ function renderPwAxisTabs() {
 
 function fillPwAxisFields(st) {
   const settings = GX20State.settings;
-  const entry = (settings.pw_axis && settings.pw_axis[st]) || { v: { min: 0, max: 230, auto: false }, iw: { min: 0, max: 250, auto: false } };
+  const entry = (settings.pw_axis && settings.pw_axis[st]) || {
+    v: { min: 0, max: 230, auto: false },
+    i: { min: 0, max: 5,   auto: false },
+    w: { min: 0, max: 250, auto: false },
+  };
+  // 向後相容：舊資料是 iw 共用軸 → 拿到 i/w 任一不存在就退回 iw
+  if (entry.iw && (!entry.i || !entry.w)) {
+    entry.i = entry.i || { min: entry.iw.min, max: entry.iw.max, auto: entry.iw.auto };
+    entry.w = entry.w || { min: entry.iw.min, max: entry.iw.max, auto: entry.iw.auto };
+  }
   const vMinEl  = document.querySelector('[data-pwaxis-field="v-min"]');
   const vMaxEl  = document.querySelector('[data-pwaxis-field="v-max"]');
-  const iwMinEl = document.querySelector('[data-pwaxis-field="iw-min"]');
-  const iwMaxEl = document.querySelector('[data-pwaxis-field="iw-max"]');
-  const vAutoEl  = document.querySelector('[data-pwaxis-field="v-auto"]');
-  const iwAutoEl = document.querySelector('[data-pwaxis-field="iw-auto"]');
-  if (!vMinEl || !vMaxEl || !iwMinEl || !iwMaxEl || !vAutoEl || !iwAutoEl) return;
+  const iMinEl  = document.querySelector('[data-pwaxis-field="i-min"]');
+  const iMaxEl  = document.querySelector('[data-pwaxis-field="i-max"]');
+  const wMinEl  = document.querySelector('[data-pwaxis-field="w-min"]');
+  const wMaxEl  = document.querySelector('[data-pwaxis-field="w-max"]');
+  const vAutoEl = document.querySelector('[data-pwaxis-field="v-auto"]');
+  const iAutoEl = document.querySelector('[data-pwaxis-field="i-auto"]');
+  const wAutoEl = document.querySelector('[data-pwaxis-field="w-auto"]');
+  if (!vMinEl || !vMaxEl || !iMinEl || !iMaxEl || !wMinEl || !wMaxEl || !vAutoEl || !iAutoEl || !wAutoEl) return;
   vMinEl.value  = entry.v.min;
   vMaxEl.value  = entry.v.max;
-  iwMinEl.value = entry.iw.min;
-  iwMaxEl.value = entry.iw.max;
-  vAutoEl.checked  = !!entry.v.auto;
-  iwAutoEl.checked = !!entry.iw.auto;
+  iMinEl.value  = entry.i.min;
+  iMaxEl.value  = entry.i.max;
+  wMinEl.value  = entry.w.min;
+  wMaxEl.value  = entry.w.max;
+  vAutoEl.checked = !!entry.v.auto;
+  iAutoEl.checked = !!entry.i.auto;
+  wAutoEl.checked = !!entry.w.auto;
   // 動態縮放啟用時 → 對應欄位半透明
-  applyPwAxisAutoState(entry.v.auto, entry.iw.auto);
+  applyPwAxisAutoState(entry.v.auto, entry.i.auto, entry.w.auto);
 }
 
-function applyPwAxisAutoState(vAuto, iwAuto) {
+function applyPwAxisAutoState(vAuto, iAuto, wAuto) {
   const vMinEl  = document.querySelector('[data-pwaxis-field="v-min"]');
   const vMaxEl  = document.querySelector('[data-pwaxis-field="v-max"]');
-  const iwMinEl = document.querySelector('[data-pwaxis-field="iw-min"]');
-  const iwMaxEl = document.querySelector('[data-pwaxis-field="iw-max"]');
-  if (vMinEl)  { vMinEl.disabled  = vAuto;  vMinEl.style.opacity  = vAuto  ? "0.5" : "1"; }
-  if (vMaxEl)  { vMaxEl.disabled  = vAuto;  vMaxEl.style.opacity  = vAuto  ? "0.5" : "1"; }
-  if (iwMinEl) { iwMinEl.disabled = iwAuto; iwMinEl.style.opacity = iwAuto ? "0.5" : "1"; }
-  if (iwMaxEl) { iwMaxEl.disabled = iwAuto; iwMaxEl.style.opacity = iwAuto ? "0.5" : "1"; }
+  const iMinEl  = document.querySelector('[data-pwaxis-field="i-min"]');
+  const iMaxEl  = document.querySelector('[data-pwaxis-field="i-max"]');
+  const wMinEl  = document.querySelector('[data-pwaxis-field="w-min"]');
+  const wMaxEl  = document.querySelector('[data-pwaxis-field="w-max"]');
+  if (vMinEl) { vMinEl.disabled = vAuto; vMinEl.style.opacity = vAuto ? "0.5" : "1"; }
+  if (vMaxEl) { vMaxEl.disabled = vAuto; vMaxEl.style.opacity = vAuto ? "0.5" : "1"; }
+  if (iMinEl) { iMinEl.disabled = iAuto; iMinEl.style.opacity = iAuto ? "0.5" : "1"; }
+  if (iMaxEl) { iMaxEl.disabled = iAuto; iMaxEl.style.opacity = iAuto ? "0.5" : "1"; }
+  if (wMinEl) { wMinEl.disabled = wAuto; wMinEl.style.opacity = wAuto ? "0.5" : "1"; }
+  if (wMaxEl) { wMaxEl.disabled = wAuto; wMaxEl.style.opacity = wAuto ? "0.5" : "1"; }
 }
 
 function bindPwAxisFields() {
-  const vMinEl  = document.querySelector('[data-pwaxis-field="v-min"]');
-  const vMaxEl  = document.querySelector('[data-pwaxis-field="v-max"]');
-  const iwMinEl = document.querySelector('[data-pwaxis-field="iw-min"]');
-  const iwMaxEl = document.querySelector('[data-pwaxis-field="iw-max"]');
-  const vAutoEl  = document.querySelector('[data-pwaxis-field="v-auto"]');
-  const iwAutoEl = document.querySelector('[data-pwaxis-field="iw-auto"]');
-  if (!vMinEl || !vMaxEl || !iwMinEl || !iwMaxEl || !vAutoEl || !iwAutoEl) return;
+  const vMinEl = document.querySelector('[data-pwaxis-field="v-min"]');
+  const vMaxEl = document.querySelector('[data-pwaxis-field="v-max"]');
+  const iMinEl = document.querySelector('[data-pwaxis-field="i-min"]');
+  const iMaxEl = document.querySelector('[data-pwaxis-field="i-max"]');
+  const wMinEl = document.querySelector('[data-pwaxis-field="w-min"]');
+  const wMaxEl = document.querySelector('[data-pwaxis-field="w-max"]');
+  const vAutoEl = document.querySelector('[data-pwaxis-field="v-auto"]');
+  const iAutoEl = document.querySelector('[data-pwaxis-field="i-auto"]');
+  const wAutoEl = document.querySelector('[data-pwaxis-field="w-auto"]');
+  if (!vMinEl || !vMaxEl || !iMinEl || !iMaxEl || !wMinEl || !wMaxEl || !vAutoEl || !iAutoEl || !wAutoEl) return;
 
   // 取得目前 tab 的站位（電力 Y 軸 tab 自己的，不一定等同 currentStation）
   let activeStation = STATIONS[0];
@@ -507,33 +529,52 @@ function bindPwAxisFields() {
     const s = GX20State.settings;
     if (!s.pw_axis) s.pw_axis = {};
     const st = getActivePwAxisStation();
-    if (!s.pw_axis[st]) s.pw_axis[st] = { v: { min: 0, max: 230, auto: false }, iw: { min: 0, max: 250, auto: false } };
+    if (!s.pw_axis[st]) {
+      s.pw_axis[st] = {
+        v: { min: 0, max: 230, auto: false },
+        i: { min: 0, max: 5,   auto: false },
+        w: { min: 0, max: 250, auto: false },
+      };
+    }
     const cur = s.pw_axis[st];
     if ("v_min"  in patch) cur.v.min  = patch.v_min;
     if ("v_max"  in patch) cur.v.max  = patch.v_max;
-    if ("iw_min" in patch) cur.iw.min = patch.iw_min;
-    if ("iw_max" in patch) cur.iw.max = patch.iw_max;
-    if ("v_auto"  in patch) cur.v.auto  = patch.v_auto;
-    if ("iw_auto" in patch) cur.iw.auto = patch.iw_auto;
+    if ("i_min"  in patch) cur.i.min  = patch.i_min;
+    if ("i_max"  in patch) cur.i.max  = patch.i_max;
+    if ("w_min"  in patch) cur.w.min  = patch.w_min;
+    if ("w_max"  in patch) cur.w.max  = patch.w_max;
+    if ("v_auto" in patch) cur.v.auto = patch.v_auto;
+    if ("i_auto" in patch) cur.i.auto = patch.i_auto;
+    if ("w_auto" in patch) cur.w.auto = patch.w_auto;
     GX20State.update("pw_axis", s.pw_axis);
   };
 
-  vMinEl.addEventListener("input",  () => writeBack({ v_min: parseFloat(vMinEl.value)  || 0 }));
-  vMinEl.addEventListener("change", () => writeBack({ v_min: parseFloat(vMinEl.value)  || 0 }));
-  vMaxEl.addEventListener("input",  () => writeBack({ v_max: parseFloat(vMaxEl.value)  || 0 }));
-  vMaxEl.addEventListener("change", () => writeBack({ v_max: parseFloat(vMaxEl.value)  || 0 }));
-  iwMinEl.addEventListener("input", () => writeBack({ iw_min: parseFloat(iwMinEl.value) || 0 }));
-  iwMinEl.addEventListener("change",() => writeBack({ iw_min: parseFloat(iwMinEl.value) || 0 }));
-  iwMaxEl.addEventListener("input", () => writeBack({ iw_max: parseFloat(iwMaxEl.value) || 0 }));
-  iwMaxEl.addEventListener("change",() => writeBack({ iw_max: parseFloat(iwMaxEl.value) || 0 }));
+  const num = (el) => parseFloat(el.value) || 0;
+  vMinEl.addEventListener("input",  () => writeBack({ v_min: num(vMinEl) }));
+  vMinEl.addEventListener("change", () => writeBack({ v_min: num(vMinEl) }));
+  vMaxEl.addEventListener("input",  () => writeBack({ v_max: num(vMaxEl) }));
+  vMaxEl.addEventListener("change", () => writeBack({ v_max: num(vMaxEl) }));
+  iMinEl.addEventListener("input",  () => writeBack({ i_min: num(iMinEl) }));
+  iMinEl.addEventListener("change", () => writeBack({ i_min: num(iMinEl) }));
+  iMaxEl.addEventListener("input",  () => writeBack({ i_max: num(iMaxEl) }));
+  iMaxEl.addEventListener("change", () => writeBack({ i_max: num(iMaxEl) }));
+  wMinEl.addEventListener("input",  () => writeBack({ w_min: num(wMinEl) }));
+  wMinEl.addEventListener("change", () => writeBack({ w_min: num(wMinEl) }));
+  wMaxEl.addEventListener("input",  () => writeBack({ w_max: num(wMaxEl) }));
+  wMaxEl.addEventListener("change", () => writeBack({ w_max: num(wMaxEl) }));
   vAutoEl.addEventListener("change", () => {
     const v = vAutoEl.checked;
-    applyPwAxisAutoState(v, iwAutoEl.checked);
+    applyPwAxisAutoState(v, iAutoEl.checked, wAutoEl.checked);
     writeBack({ v_auto: v });
   });
-  iwAutoEl.addEventListener("change", () => {
-    const w = iwAutoEl.checked;
-    applyPwAxisAutoState(vAutoEl.checked, w);
-    writeBack({ iw_auto: w });
+  iAutoEl.addEventListener("change", () => {
+    const i = iAutoEl.checked;
+    applyPwAxisAutoState(vAutoEl.checked, i, wAutoEl.checked);
+    writeBack({ i_auto: i });
+  });
+  wAutoEl.addEventListener("change", () => {
+    const w = wAutoEl.checked;
+    applyPwAxisAutoState(vAutoEl.checked, iAutoEl.checked, w);
+    writeBack({ w_auto: w });
   });
 }

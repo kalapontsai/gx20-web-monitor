@@ -541,27 +541,35 @@ function rebuildPowerChart() { buildPowerChart(); }
 
 /**
  * v7：取得「目前站位」的電力 Y 軸設定。
- * 結構 { v:{min,max,auto}, iw:{min,max,auto} }。
+ * 結構 { v:{min,max,auto}, i:{min,max,auto}, w:{min,max,auto} }。
+ * 向後相容：舊資料的 iw 會展開到 i + w 兩軸。
  */
 function getPwAxisForCurrent() {
   const s = GX20State.settings;
   const pwAxis = (s && s.pw_axis) || {};
   const entry = pwAxis[currentStation];
   if (entry && typeof entry === "object") {
+    // 舊 iw → 展開到 i + w
+    if (entry.iw && (!entry.i || !entry.w)) {
+      entry.i = entry.i || { min: entry.iw.min, max: entry.iw.max, auto: entry.iw.auto };
+      entry.w = entry.w || { min: entry.iw.min, max: entry.iw.max, auto: entry.iw.auto };
+    }
     return {
-      v:  { min: Number(entry.v.min),  max: Number(entry.v.max),  auto: !!entry.v.auto },
-      iw: { min: Number(entry.iw.min), max: Number(entry.iw.max), auto: !!entry.iw.auto },
+      v: { min: Number(entry.v.min), max: Number(entry.v.max), auto: !!entry.v.auto },
+      i: { min: Number(entry.i.min), max: Number(entry.i.max), auto: !!entry.i.auto },
+      w: { min: Number(entry.w.min), max: Number(entry.w.max), auto: !!entry.w.auto },
     };
   }
   return {
-    v:  { min: 0, max: 230, auto: false },
-    iw: { min: 0, max: 250, auto: false },
+    v: { min: 0, max: 230, auto: false },
+    i: { min: 0, max: 5,   auto: false },
+    w: { min: 0, max: 250, auto: false },
   };
 }
 
 function applyPowerYAxisToChart() {
   if (!pwChart) return;
-  const { v, iw } = getPwAxisForCurrent();
+  const { v, i, w } = getPwAxisForCurrent();
   // V 軸 (右)
   if (v.auto) {
     delete pwChart.options.scales.yV.min;
@@ -570,13 +578,21 @@ function applyPowerYAxisToChart() {
     if (Number.isFinite(v.min)) pwChart.options.scales.yV.min = v.min;
     if (Number.isFinite(v.max)) pwChart.options.scales.yV.max = v.max;
   }
-  // I,W 共用軸 (左)
-  if (iw.auto) {
+  // I 軸 (左)
+  if (i.auto) {
     delete pwChart.options.scales.yI.min;
     delete pwChart.options.scales.yI.max;
   } else {
-    if (Number.isFinite(iw.min)) pwChart.options.scales.yI.min = iw.min;
-    if (Number.isFinite(iw.max)) pwChart.options.scales.yI.max = iw.max;
+    if (Number.isFinite(i.min)) pwChart.options.scales.yI.min = i.min;
+    if (Number.isFinite(i.max)) pwChart.options.scales.yI.max = i.max;
+  }
+  // W 軸 (左，offset 推到右邊)
+  if (w.auto) {
+    delete pwChart.options.scales.yW.min;
+    delete pwChart.options.scales.yW.max;
+  } else {
+    if (Number.isFinite(w.min)) pwChart.options.scales.yW.min = w.min;
+    if (Number.isFinite(w.max)) pwChart.options.scales.yW.max = w.max;
   }
 }
 
@@ -597,7 +613,7 @@ function buildPowerChart() {
   const datasets = [
     { label: "V", data: [], borderColor: colors.v, backgroundColor: colors.v, borderWidth: 0.9, pointRadius: 0.9, tension: 0.15, yAxisID: "yV", pointKey: "v" },
     { label: "I", data: [], borderColor: colors.i, backgroundColor: colors.i, borderWidth: 0.9, pointRadius: 0.9, tension: 0.15, yAxisID: "yI", pointKey: "i" },
-    { label: "W", data: [], borderColor: colors.w, backgroundColor: colors.w, borderWidth: 0.9, pointRadius: 0.9, tension: 0.15, yAxisID: "yI", pointKey: "w" },
+    { label: "W", data: [], borderColor: colors.w, backgroundColor: colors.w, borderWidth: 0.9, pointRadius: 0.9, tension: 0.15, yAxisID: "yW", pointKey: "w" },
   ];
 
   if (pwChart) {
@@ -642,7 +658,15 @@ function buildPowerChart() {
           position: "left",
           ticks: { color: c.text },
           grid:  { color: c.grid },
-          title: { display: true, text: "I (A) / W", color: c.text },
+          title: { display: true, text: "I (A)", color: c.text },
+        },
+        yW: {
+          type: "linear",
+          position: "left",
+          offset: true,        // 與 yI 並排於左側，往右推
+          ticks: { color: c.text },
+          grid:  { drawOnChartArea: false },  // 不要重複畫格線
+          title: { display: true, text: "W (W)", color: c.text },
         },
         yV: {
           type: "linear",
@@ -690,6 +714,8 @@ function applyThemeToPwChart() {
   if (pwChart.options.scales.yI.ticks) pwChart.options.scales.yI.ticks.color = c.text;
   if (pwChart.options.scales.yI.grid)  pwChart.options.scales.yI.grid.color  = c.grid;
   if (pwChart.options.scales.yI.title) pwChart.options.scales.yI.title.color = c.text;
+  if (pwChart.options.scales.yW.ticks) pwChart.options.scales.yW.ticks.color = c.text;
+  if (pwChart.options.scales.yW.title) pwChart.options.scales.yW.title.color = c.text;
   if (pwChart.options.scales.yV.ticks) pwChart.options.scales.yV.ticks.color = c.text;
   if (pwChart.options.scales.yV.title) pwChart.options.scales.yV.title.color = c.text;
   pwChart.update("none");
