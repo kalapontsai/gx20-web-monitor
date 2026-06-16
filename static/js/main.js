@@ -1035,6 +1035,10 @@ function prunePowerData() {
  * V 軸不受影響（V 是電壓，跟 I/W 沒成比例關係）。
  */
 function alignPowerYAxesToData() {
+  // v8.5：共用 powerMax (W 等價) → yI.max = powerMax/100，yW.max = powerMax
+  // 確保兩軸邊界永遠在「同一條水平線」，不論電壓怎麼浮動。
+  // - 取 I*100 跟 W 的最大值 → 涵蓋「I 高但 V 低」與「W 高但 I 低」兩種場景
+  // - 嚴格 100:1：犧牲電壓浮動時的真實峰相對位置，但換來軸邊界絕對對齊
   if (!pwChart) return;
   let iPeak = 0, wPeak = 0;
   for (const ds of pwChart.data.datasets) {
@@ -1050,8 +1054,17 @@ function alignPowerYAxesToData() {
     }
   }
   const HEAD_ROOM = 1.1;  // 頂端預留 10% 空間
-  pwChart.options.scales.yI.max = iPeak > 0 ? iPeak * HEAD_ROOM : 5;
-  pwChart.options.scales.yW.max = wPeak > 0 ? wPeak * HEAD_ROOM : 250;
+  const DEFAULT_POWER_MAX = 500;  // 無資料時的預設（5 A / 500 W）
+  let powerMax;
+  if (iPeak > 0 || wPeak > 0) {
+    const iAsW = iPeak * 100;  // I → W 等價
+    powerMax = Math.max(iAsW, wPeak) * HEAD_ROOM;
+  } else {
+    powerMax = DEFAULT_POWER_MAX;
+  }
+  // 嚴格 100:1 → 兩軸 max 邊界永遠在同一條水平線（不會再像 v8.4 出現 1.9/193.5=101.8 偏差）
+  pwChart.options.scales.yW.max = powerMax;
+  pwChart.options.scales.yI.max = powerMax / 100;
 }
 
 /**
