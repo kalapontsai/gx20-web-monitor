@@ -104,7 +104,13 @@
 
 ---
 
-## 3. v3 / v4 / v5 改版總覽
+## 3. v3 ~ v8 改版總覽
+
+### v8 — CSV 中文欄位 BOM hotfix + 別名長度上限
+
+- **`/api/export_csv` BOM 算兩次導致中文尾部被切壞**：用 `utf-8` 算 `Content-Length` + `mimetype="text/csv"` 走 `Response` 建構子
+- **別名輸入框加 `maxLength=20`** + 後端 `_sanitize_csv_cell` 加 20 字截斷防線
+- 詳細根因 / 修法 / 驗收記錄 → [CHANGELOG §5](CHANGELOG.md#5-現況進度2026-06-16-csv-bom-hotfix)
 
 ### v5.0 — 6 工位獨立 DB + 清除前歸檔
 
@@ -709,7 +715,7 @@ data/
 | | 圖表最大顯示點數 | `2000` | 200~10000 | dataset 超過此值會 LTTB 降取樣 |
 | 3.7 偵錯 | Debug log | `false` | bool | 啟用後 log 寫到 `logs/app.log`（DEBUG 等級）|
 | 4. 接點設定 | 顯示 / 隱藏 | 全顯示 | bool | 隱藏的接點不畫線、不入表格（資料仍存）|
-| | 別名 | `Ch01`~`Ch20` | str | 右側表格與圖例優先顯示別名 |
+| | 別名 | `Ch01`~`Ch20` | str (≤ 20 字) | 右側表格與圖例優先顯示別名。**v8 起最長 20 字**（UI maxLength + 後端 `_sanitize_csv_cell` 防線），避免超長中文撐破版與 CSV 標頭 |
 | | 顏色 | 20 色預設 | hex | 圖表曲線顏色 + 表格 swatch |
 
 > **v3 移除的欄位**（已由主畫面下拉取代）：

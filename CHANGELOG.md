@@ -1,6 +1,6 @@
 # GX20 Web Monitor — 版本演進與現況
 
-> 大版本快照 + 重要 bug 修復 + 現況進度（最後更新：2026-06-15）
+> 大版本快照 + 重要 bug 修復 + 現況進度（最後更新：2026-06-16）
 >
 > 程式架構見 [ARCHITECTURE.md](ARCHITECTURE.md)；使用者操作見 [README.md](README.md)。
 
@@ -12,6 +12,7 @@
 2. [現況進度（2026-06-11 session）](#2-現況進度2026-06-11-session)
 3. [現況進度（2026-06-12 進階計算上線）](#3-現況進度2026-06-12-進階計算上線)
 4. [現況進度（2026-06-15 PW3335 電力計上線）](#4-現況進度2026-06-15-pw3335-電力計上線)
+5. [現況進度（2026-06-16 CSV BOM hotfix）](#5-現況進度2026-06-16-csv-bom-hotfix)
 
 ---
 
@@ -27,6 +28,7 @@
 | **v6.0** | — | per-station Y 軸範圍 + 動態縮放 + clear_log endpoint |
 | **v6.1** | 2026-06-12 | 進階計算：游標模式（拖曳 x-bar 計算區間平均/最大/最小）|
 | **v7** | 2026-06-15 | PW3335 電力計整合（6 工位 V/I/W、雙圖表、CSV 補欄）|
+| **v8** | 2026-06-16 | CSV 中文欄位 BOM hotfix + 別名長度上限 20 字 |
 
 ### 1.1 v5.0 — 6 工位獨立 DB + 清除前歸檔
 
@@ -375,3 +377,79 @@ ALTER TABLE samples ADD COLUMN w REAL;
 ```
 
 `storage._ensure_power_columns()` 用 `PRAGMA table_info(samples)` 偵測缺欄就 ALTER。
+
+---
+
+## 5. 現況進度（2026-06-16 CSV BOM hotfix）
+
+### 5.1 背景
+
+大在設定頁把溫度別名設成中文（如 `TC1-冷凝器入口`），下載 CSV 用 Excel 開啟後看到 `TC1-?入?` 這種「?」亂碼。且別名輸入框無長度限制，超長中文會撐破表格。
+
+### 5.2 根因
+
+`/api/export_csv` 在 Flask `Response` 送了 `Content-Length` header：
+
+```python
+csv_text = "\ufeffdatetime,..."   # 字串內已含 BOM 字元
+"Content-Length": str(len(csv_text.encode("utf-8-sig")))   # ⚠️ 會再 prepend BOM
+```
+
+`utf-8-sig` 對**任何**字串都會 prepend 一個 BOM。`csv_text` 內部已有 BOM 字串 `\ufeff` → encode 後 body 被多加 3 byte BOM → `Content-Length` 比實際 body 多 3 byte → 瀏覽器讀到 N-3 byte 就關連線 → 結尾的 UTF-8 多 byte 字被切壞 → Excel 解成 `?`。
+
+（順帶：`Content-Type` header 出現 `text/csv; charset=utf-8; charset=utf-8` 重複，是 Flask `Response(..., mimetype="text/csv; charset=utf-8")` 雙重送 header 造成。）
+
+### 5.3 修法
+
+**`app.py` /api/export_csv**：
+```python
+# 修法：字串內已含 BOM，用 utf-8 算出來才是實際 body 位元組數
+body_bytes = csv_text.encode("utf-8")
+return Response(
+    body_bytes,
+    mimetype="text/csv",   # 不再手動帶 charset，避免 header 重複
+    headers={
+        "Content-Disposition": ...,
+        "Content-Length": str(len(body_bytes)),
+    },
+)
+```
+
+**`app.py` _sanitize_csv_cell**（別名長度防線）：
+```python
+if len(s) > 20:
+    s = s[:20]
+```
+
+**`static/js/settings.js`**（別名輸入框 maxlength）：
+```javascript
+aliasInp.maxLength = 20;
+```
+
+### 5.4 驗收（OTA 端 `<DEPLOY_HOST>:5000`）
+
+| 項 | 結果 |
+|----|------|
+| BOM 開頭 | `efbbbf` ✓ |
+| actual bytes (743) == Content-Length (743) | ✓（修法前差 3 byte）|
+| Content-Type | `text/csv; charset=utf-8`（單一、不再重複）✓ |
+| 30 字中文別名 → server 端截到 20 字 | ✓ |
+| log tail ERROR 計數 | 0 ✓ |
+| 6 工位 `emit new_sample` | 正常 ✓ |
+
+### 5.5 迭代歷史（1 個 commit，2 檔）
+
+| 檔 | 修改 |
+|----|------|
+| `app.py` | `/api/export_csv` 改用 `utf-8` 算 Content-Length + `mimetype="text/csv"`；`_sanitize_csv_cell` 加 20 字截斷 |
+| `static/js/settings.js` | 動態生成的別名 input 加 `maxLength=20` |
+
+### 5.6 教訓
+
+BOM / 編碼相關的 `Content-Length` 永遠用對應 body 的編碼算，不要看字串 encode 怎樣就照抄 `utf-8-sig`。這跟 v7 ring tuple unpack 慘案（commit `2b8de47`）同類——改編碼/序列化/結構的 commit 必跑 repro script 灌真實 shape 跑一次關鍵函式，**只 `py_compile` 抓不到這種語意錯誤**。
+
+### 5.7 設計決策：別名上限 20 字
+
+- 圖表 legend 與「最新讀值」表格的 channel 名稱排成一行，>20 撐破版
+- 後端 `_sanitize_csv_cell` 是最後一道防線（避免有人手動 POST 繞過 UI）
+- UI `maxLength` 是第一道防線（輸入時就擋，體感比送出後才被截好）

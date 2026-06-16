@@ -1168,6 +1168,9 @@ def _sanitize_csv_cell(s: str) -> str:
     if s is None:
         return ""
     s = str(s)
+    # v8：別名長度上限 20 字（避免超長中文把 CSV 表格/欄寬撐爆）
+    if len(s) > 20:
+        s = s[:20]
     # 防止 Excel 公式注入
     if s and s[0] in ("=", "+", "-", "@"):
         s = "'" + s
@@ -1333,15 +1336,20 @@ def api_export_csv(station: str):
     from urllib.parse import quote
     quoted_utf8 = quote(utf8_fname, safe="")
 
+    # 編 Content-Length：csv_text 內已含 BOM ("\ufeff")，用 utf-8 編出來就是
+    # 實際 body 的位元組數 (3 byte BOM + 後續 UTF-8 位元組)。
+    # 注意：不能用 utf-8-sig，否則會把 BOM 再算一次，Content-Length 偏多 3 byte，
+    # 瀏覽器讀到一半就關連線 → 最後一個中文字被切壞 → Excel 顯示 ? 亂碼。
+    body_bytes = csv_text.encode("utf-8")
     return Response(
-        csv_text,
-        mimetype="text/csv; charset=utf-8",
+        body_bytes,
+        mimetype="text/csv",
         headers={
             "Content-Disposition": (
                 f"attachment; filename=\"{ascii_fname}\"; "
                 f"filename*=UTF-8''{quoted_utf8}"
             ),
-            "Content-Length": str(len(csv_text.encode("utf-8-sig"))),
+            "Content-Length": str(len(body_bytes)),
         },
     )
 

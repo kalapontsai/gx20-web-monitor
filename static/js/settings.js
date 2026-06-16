@@ -223,6 +223,8 @@ function renderChGrid() {
     const aliasInp = document.createElement("input");
     aliasInp.type = "text";
     aliasInp.className = "ch-alias-inp";
+    // v8：別名長度上限 20 字（避免超長中文把圖表/表格撐破版）
+    aliasInp.maxLength = 20;
     aliasInp.value = settings.ch_alias[currentStation][i] || "";
     aliasInp.placeholder = `Ch${i+1}`;
     aliasInp.addEventListener("input", () => {
