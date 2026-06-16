@@ -484,7 +484,8 @@ def compute_rate_from_ring(station: str, since_minutes: int, point_index: int) -
         return None
     win = _ring_window_since(rb, since_minutes)
     vals = []
-    for ts_str, temps in win:
+    # v7：ring 是 5-tuple (ts, temps, v, i, w)
+    for ts_str, temps, _v, _i, _w in win:
         v = temps[point_index]
         if v is not None:
             vals.append((ts_str, v))
@@ -508,7 +509,8 @@ def compute_avg_from_ring(station: str, since_minutes: int, point_index: int) ->
     if not rb:
         return None
     win = _ring_window_since(rb, since_minutes)
-    vals = [temps[point_index] for _, temps in win if temps[point_index] is not None]
+    # v7：ring 是 5-tuple (ts, temps, v, i, w)
+    vals = [temps[point_index] for _, temps, _v, _i, _w in win if temps[point_index] is not None]
     if not vals:
         return None
     return round(sum(vals) / len(vals), 2)
