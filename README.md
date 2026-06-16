@@ -112,6 +112,30 @@
 - **別名輸入框加 `maxLength=20`** + 後端 `_sanitize_csv_cell` 加 20 字截斷防線
 - 詳細根因 / 修法 / 驗收記錄 → [CHANGELOG §5](CHANGELOG.md#5-現況進度2026-06-16-csv-bom-hotfix)
 
+### v8.1 — 設定跨瀏覽器/跨電腦不同步 → debounce auto-save
+
+- **`storage.js` `update()` 結尾加 300ms debounce 自動 POST server**：所有設定改動自動同步，跨瀏覽器/跨電腦都看得到
+- **`main.js` 拿掉 `patchSettingAndApply` 結尾的舊 fetch POST**：避免 PATCH 語意覆蓋其他欄位 + 與 debounce 重複觸發
+- 詳細 → [CHANGELOG §6.3](CHANGELOG.md#63-v81--debounce-auto-save)
+
+### v8.1.1 — 自動 migrate legacy session（⚠️ 已被 v8.1.2 拿掉）
+
+- init() 結尾掃 sessionStorage 殘留並自動同步 server
+- **修法本身對，但會造成跨工位污染**（sess 內只有工位 N，merge 後整包 POST 出去會清空其他工位）
+- v8.1.2 改採「遠端鎖死」策略根治
+- 詳細 → [CHANGELOG §6.4–6.5](CHANGELOG.md#6-現況進度2026-06-16-設定同步-v8-1-v8-1-1-v8-1-2)
+
+### v8.1.2 — 遠端瀏覽器鎖死設定權限（127.0.0.1 才可改）
+
+- **決策**：只有 OTA 本機 (`127.0.0.1`) 可變更設定，遠端瀏覽器只能讀
+- **判定**：以 `request.remote_addr` 為準，僅接受 `127.0.0.1` / `::1`，其他 → 403 + readonly 訊息
+- **前端 UI**：
+  - 遠端時「設定」按鈕 `display: none` 隱藏
+  - 主畫面三 select (X軸/速率/平均) `disabled = true`
+- **server**：`GET /api/settings` response 加 `is_local` 讓前端知道身份
+- **根治 v8.1.1 跨工位污染**：遠端根本不能改，sessionStorage 殘留不污染 server
+- 詳細 → [CHANGELOG §6.6–6.7](CHANGELOG.md#66-v812--遠端瀏覽器鎖死根治方案)
+
 ### v5.0 — 6 工位獨立 DB + 清除前歸檔
 
 **背景**：6 工位非同步上下線，原有單一 `data/gx20.db` 設計會造成：
@@ -875,7 +899,7 @@ https://skemman.is/handle/1946/15343
 
 | 角色 | 主機 | 工作目錄 | 同步方式 |
 |------|------|----------|----------|
-| 開發端 | WSL（PCXSSDl） | `D:\OneDrive - Sampo Corporation\3.Data\5.Python\gx20-web-monitor\` | 二寶改檔的起點 |
+| 開發端 | WSL（<DEV_HOST>） | `<DEV_PROJECT_DIR>\` | 二寶改檔的起點 |
 | 部署端 | Windows <DEPLOY_HOST> | `<DEPLOY_PATH>\` | 跑 python app.py |
 | 同步通道 | **OTA**（HTTP） | `POST /api/admin/*` 帶 `X-OTA-Token` header | 兩端都是 Windows 跑 Python，但**沒有** OneDrive 同步 |
 
@@ -1174,7 +1198,7 @@ v4 系列 bug 修完後，原本提的三大需求進入實作階段。
 
 | 角色 | 主機 | 路徑 | 備註 |
 |------|------|------|------|
-| 開發端 | WSL (PCXSSDl) | `D:\OneDrive - Sampo Corporation\3.Data\5.Python\gx20-web-monitor` | 二寶改檔的起點 |
+| 開發端 | WSL (<DEV_HOST>) | `<DEV_PROJECT_DIR>` | 二寶改檔的起點 |
 | 部署端 | Windows <DEPLOY_HOST> | `<DEPLOY_PATH>` | 跑 python app.py |
 | 同步通道 | OTA（HTTP） | `POST /api/admin/*` 帶 `X-OTA-Token` header | 兩端都是 Windows 跑 Python，但沒 OneDrive 同步 |
 

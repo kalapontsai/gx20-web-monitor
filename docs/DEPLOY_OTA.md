@@ -10,7 +10,7 @@
 
 | 角色 | 主機 | 工作目錄 | 備註 |
 |---|---|---|---|
-| 開發 | WSL (D:\OneDrive\...) | D:\OneDrive - Sampo Corporation\3.Data\5.Python\gx20-web-monitor\ | 我改檔的起點 |
+| 開發 | WSL (D:\OneDrive\...) | <DEV_PROJECT_DIR>\ | 我改檔的起點 |
 | 部署 | Windows <DEPLOY_HOST> | <DEPLOY_PATH>0610\ | 跑 python app.py |
 | 同步通道 | **OTA** | HTTP POST /api/admin/* | 帶 token 認證 |
 
