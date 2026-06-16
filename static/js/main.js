@@ -368,16 +368,10 @@ async function patchSettingAndApply(key, value, which) {
     refreshRateAvgHeaders();
   }
 
-  // 3) 背景 POST 到 server（不需要等回應，poller 下輪會重讀）
-  try {
-    await fetch("/api/settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ [key]: value }),
-    });
-  } catch (e) {
-    console.warn("patchSetting 失敗", key, value, e);
-  }
+  // 3) v8.1：舊的「立即 fetch POST」拿掉。GX20State.update() 結尾已
+  //    自動 debounce 300ms 寫回 server。這條 fire-and-forget 路徑只會跟
+  //    debounce 重複觸發、吃頻寬、而且 payload 只帶 [key] 單一欄位會覆蓋
+  //    server 端其他欄位（PATCH 語意不對）。統一走 storage.js 自動 save。
 }
 
 // ---------- Chart ----------

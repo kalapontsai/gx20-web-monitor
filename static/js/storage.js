@@ -79,6 +79,29 @@
     window.GX20State.dirty = !snapshotEqual(cur, saved);
   }
 
+  // ---------- debounce 自動保存（v8.1） ----------
+  // 舊行為：使用者按「保存」才 POST /api/settings
+  // 問題：主畫面三 select (X軸/速率/平均) onChange 走 update() → 只寫 sessionStorage，
+  //       關掉分頁就消失；其他瀏覽器/電腦也看不到
+  // 新行為：任何 update() 結尾 scheduleSave() → 300ms debounce 後自動 POST server
+  //         「保存」按鈕保留為「強制立即 flush」入口（手動按也算 dirty 自動 save 之外的雙保險）
+  // ⚠️ v8.1.2 起：遠端瀏覽器也被這個路徑觸發 POST，但 server 端 403 擋下，client 樂觀更新
+  const SAVE_DEBOUNCE_MS = 300;
+  let _saveTimer = null;
+  function _scheduleSave() {
+    if (_saveTimer) clearTimeout(_saveTimer);
+    _saveTimer = setTimeout(() => {
+      _saveTimer = null;
+      // 避免 init() 過程中還沒 ready 就誤觸
+      if (window.GX20State && typeof window.GX20State.save === "function") {
+        window.GX20State.save().catch(err => {
+          // POST 失敗不擋 UI；client 端 sessionStorage 還有值，下次重試
+          console.warn("[GX20State] auto-save failed:", err);
+        });
+      }
+    }, SAVE_DEBOUNCE_MS);
+  }
+
   // ---------- UI 反映 dirty ----------
   function refreshSaveButtons() {
     const btns = document.querySelectorAll("[data-role=save-btn]");
@@ -148,6 +171,8 @@
       sessionStorage.setItem(SESSION_KEY, JSON.stringify(this.sess));
       this.dirty = true;
       refreshSaveButtons();
+      // v8.1：自動 debounce 寫回 server，跨瀏覽器/跨電腦都看得到
+      _scheduleSave();
     },
 
     /**
