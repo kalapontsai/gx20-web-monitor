@@ -62,6 +62,11 @@ async function init() {
   await GX20State.init();
   const settings = GX20State.settings;
 
+  // v8.1.2：遠端瀏覽器隱藏設定按鈕、disable 主畫面三 select
+  applyRemoteUiLocks();
+
+
+
   // 預設站點（session 沒指定就用第一站）
   const cache = loadSessionExtra();
   const sel = document.getElementById("stationSelect");
@@ -149,6 +154,24 @@ async function init() {
 
 // 站點選擇另外存（不歸 GX20State 核心設定管）
 const TAB_KEY = "gx20.tab_extra.v1";
+
+/**
+ * v8.1.2：遠端瀏覽器鎖 UI
+ * - 隱藏「設定」按鈕（點不到設定頁）
+ * - disable 主畫面三 select（X軸/速率/平均不能改）
+ * 判定依據：GX20State.isLocal（server 在 /api/settings GET response 給 is_local）
+ * 注意：server 端 POST /api/settings 也會 403 拒遠端，是雙重保險。
+ */
+function applyRemoteUiLocks() {
+  if (GX20State.isLocal) return;  // 本機全開
+  const settingsBtn = document.getElementById("settingsBtn");
+  if (settingsBtn) settingsBtn.style.display = "none";
+  for (const id of ["chartXSel", "rateSel", "avgSel"]) {
+    const s = document.getElementById(id);
+    if (s) s.disabled = true;
+  }
+}
+
 function loadSessionExtra() {
   try { return JSON.parse(sessionStorage.getItem(TAB_KEY) || "{}"); } catch { return {}; }
 }
@@ -368,10 +391,10 @@ async function patchSettingAndApply(key, value, which) {
     refreshRateAvgHeaders();
   }
 
-  // 3) v8.1：舊的「立即 fetch POST」拿掉。GX20State.update() 結尾已
-  //    自動 debounce 300ms 寫回 server。這條 fire-and-forget 路徑只會跟
-  //    debounce 重複觸發、吃頻寬、而且 payload 只帶 [key] 單一欄位會覆蓋
-  //    server 端其他欄位（PATCH 語意不對）。統一走 storage.js 自動 save。
+  // v8.1：舊的「立即 fetch POST」拿掉。GX20State.update() 結尾已
+  // 自動 debounce 300ms 寫回 server。這條 fire-and-forget 路徑只會跟
+  // debounce 重複觸發、吃頻寬、而且 payload 只帶 [key] 單一欄位會覆蓋
+  // server 端其他欄位（PATCH 語意不對）。統一走 storage.js 自動 save。
 }
 
 // ---------- Chart ----------

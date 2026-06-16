@@ -742,13 +742,40 @@ def settings_page():
     )
 
 
+# v8.1.2：設定變更權限鎖本機
+# 決策：只有 OTA 本機 (127.0.0.1) 可變更設定，遠端瀏覽器只能讀。
+# 原因：v8.1.1 migrate legacy session 會「意外覆寫 server 設定」（跨工位污染），
+#       根治就是讓遠端沒權限改，server 端是 single source of truth。
+# 判定：以 client IP 為準，只接受 127.0.0.1 (IPv4) 跟 ::1 (IPv6)。
+#       不考慮 NAT 封包型像（大大要求簡化）。
+REMOTE_WRITE_ALLOWED_IPS = ("127.0.0.1", "::1")
+
+
+def _is_local_request() -> bool:
+    """判斷 request 是否來自本機。"""
+    # request.remote_addr 是 socket 對端 IP
+    return request.remote_addr in REMOTE_WRITE_ALLOWED_IPS
+
+
 @app.route("/api/settings", methods=["GET"])
 def api_get_settings():
-    return jsonify(load_settings())
+    # v8.1.2：GET response 加 is_local 讓前端知道是否本機，
+    # 用來決定「設定」按鈕是否隱藏、主畫面三 select 是否 disabled。
+    data = load_settings()
+    data = dict(data)  # copy
+    data["is_local"] = _is_local_request()
+    return jsonify(data)
 
 
 @app.route("/api/settings", methods=["POST"])
 def api_set_settings():
+    # v8.1.2：只有本機可變更設定
+    if not _is_local_request():
+        return jsonify({
+            "ok": False,
+            "error": "readonly",
+            "message": "設定變更權限僅限 OTA 本機瀏覽器，遠端只能讀取。"
+        }), 403
     patch = request.get_json(silent=True) or {}
     if not isinstance(patch, dict):
         return jsonify({"ok": False, "error": "body 須為 JSON 物件"}), 400
