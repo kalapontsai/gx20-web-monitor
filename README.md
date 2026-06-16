@@ -143,18 +143,27 @@
 - **前端**：遠端時「清除此工位」按鈕 `display: none` 隱藏
 - 詳細 → [CHANGELOG §6.10](CHANGELOG.md#610-v813--post-apiclear-也鎖遠端)
 
-### v8.5 — 電力圖 I/W 兩軸 max 共用 powerMax（嚴格 100:1 對齊）
+### v8.5.1 — powerMax 先 round 到 100 倍數（Chart.js nice() 不再 round 兩軸）
+
+- **問題**：v8.5 推上線後大大回饋「**不是要對齊數值，而是軸刻度的最大值與最小值要在同一高度**」
+- **根因**：Chart.js 內部會呼叫 d3-scale `nice()`，把 `y.max` round 到 1/2/5 進位。v8.5 設 yI.max=1.9349 → Chart.js nice 出 2.0；yW.max=193.49 → nice 出 200。**兩個 max 標籤都偏離 raw** → 圖上看起來仍像 1.9/193.5 在錯位
+- **解法**：自己實作 `niceToHundredStep()`，把 powerMax 先 round 到 100 的倍數（200/100=2.0）→ Chart.js nice() 不會再 round → 頂端 max 標籤 = raw max → 兩軸佔比 100%/100% 絕對對齊
+- **取捨**：資料峰值的絕對位置更保守（往上跳一檔），換來刻度標籤漂亮對齊（I 軸 2.0 / W 軸 200）
+- **設定頁**：不動
+- 詳細 → [CHANGELOG §8.1](CHANGELOG.md#81-v851--powermax-先-round-到-100-倍數讓-chartjs-nice-不再-round-兩軸)
+
+### v8.5 — 電力圖 I/W 兩軸 max 共用 powerMax（嚴格 100:1 對齊，已被 v8.5.1 取代）
 
 - **問題**：v8.4 上線後 I 軸 1.9 / W 軸 193.5（比 101.8，不是 100），**頂端還是沒對齊**——v8.4 用「各自峰 × 1.1」，當電壓浮動偏離 110V 時比例就不對
 - **解法**：共用 `powerMax = max(iPeak*100, wPeak) × 1.1`，`yW.max = powerMax`、`yI.max = powerMax / 100` → 兩軸邊界 100% 在同一條水平線
 - **取捨**：犧牲電壓浮動時 I 峰 / W 峰的絕對像素位置，換來軸邊界絕對對齊
 - **設定頁**：維持 v8.4 設定（I.max / W.max disabled）
-- 詳細 → [CHANGELOG §8.1](CHANGELOG.md#81-v85--電力圖-iw-軸邊界共用-powerMax嚴格-1001-對齊)
+- 詳細 → [CHANGELOG §8.2](CHANGELOG.md#82-v85--電力圖-iw-軸邊界共用-powerMax嚴格-1001-對齊已被-v851-取代)
 
-### v8.4 — 電力圖 I/W 兩軸 0 與 max 位置對齊（v8.5 取代）
+### v8.4 — 電力圖 I/W 兩軸 0 與 max 位置對齊（已被 v8.5.1 取代）
 
 - **問題**：I 軸 max 預設 5 A，W 軸 max 預設 250 W，跟實際資料（I~2.7 A、W~200 W）不成比例 → 兩條 0 線視覺上不在同一條水平線、頂端也錯位
-- **解法**（已被 v8.5 取代）：I 軸與 W 軸的 max **永遠動態算** = 當前可見資料的 I 峰 / W 峰 × 1.1，min 沿用設定（預設 0）→ 兩軸比例尺相同，0 線與頂端線重疊
+- **解法**（已被 v8.5.1 取代）：I 軸與 W 軸的 max **永遠動態算** = 當前可見資料的 I 峰 / W 峰 × 1.1，min 沿用設定（預設 0）→ 兩軸比例尺相同，0 線與頂端線重疊
 - **設定頁**：I.max / W.max 欄位 disabled、「自動縮放 I / W」checkbox 拿掉
 - **V 軸不動**（電壓跟 I/W 沒成比例）
 - 詳細 → [CHANGELOG §8.2](CHANGELOG.md#82-v84--電力圖-i-軸與-w-軸的-0-與-max-位置對齊)

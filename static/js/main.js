@@ -1035,10 +1035,11 @@ function prunePowerData() {
  * V 軸不受影響（V 是電壓，跟 I/W 沒成比例關係）。
  */
 function alignPowerYAxesToData() {
-  // v8.5：共用 powerMax (W 等價) → yI.max = powerMax/100，yW.max = powerMax
-  // 確保兩軸邊界永遠在「同一條水平線」，不論電壓怎麼浮動。
-  // - 取 I*100 跟 W 的最大值 → 涵蓋「I 高但 V 低」與「W 高但 I 低」兩種場景
-  // - 嚴格 100:1：犧牲電壓浮動時的真實峰相對位置，但換來軸邊界絕對對齊
+  // v8.5.1：共用 powerMax (W 等價) → yI.max = powerMax/100，yW.max = powerMax
+  // **關鍵**：powerMax 必須先 round 到 100 的倍數，才能讓 Chart.js 的 nice() 給出
+  // 同樣佔比（e.g. 2.0/200 = 1.0, 1.0/100 = 1.0），兩軸頂端 max 標籤才會在「同一條水平線」。
+  // v8.5 單純設 yI.max = powerMax/100（e.g. 1.9349）→ Chart.js nice 後變 2.0，
+  // 但 W 軸 nice(193.49)=200 → 兩軸頂端差 3.3% 高度 → 視覺上仍不對齊。
   if (!pwChart) return;
   let iPeak = 0, wPeak = 0;
   for (const ds of pwChart.data.datasets) {
@@ -1062,9 +1063,31 @@ function alignPowerYAxesToData() {
   } else {
     powerMax = DEFAULT_POWER_MAX;
   }
-  // 嚴格 100:1 → 兩軸 max 邊界永遠在同一條水平線（不會再像 v8.4 出現 1.9/193.5=101.8 偏差）
-  pwChart.options.scales.yW.max = powerMax;
-  pwChart.options.scales.yI.max = powerMax / 100;
+  // round powerMax 到 100 的倍數（保證 yI.max = powerMax/100 也是漂亮值）
+  // 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, ...
+  const nicePowerMax = niceToHundredStep(powerMax);
+  // 嚴格 100:1 → 兩軸 max 邊界永遠在同一條水平線
+  pwChart.options.scales.yW.max = nicePowerMax;
+  pwChart.options.scales.yI.max = nicePowerMax / 100;
+}
+
+/**
+ * Round 一個正數到「1-2-5 進位」的漂亮值（與 d3-scale 的 nice() 同步）。
+ * 為什麼要這個：Chart.js 在畫軸刻度時會呼叫 nice() 把 max 自動 round 到 1/2/5 進位，
+ * 如果我們直接餵 raw 數字（例如 193.49），Chart.js 會 round 成 200，而 I 軸的 1.9349
+ * 會 round 成 2.0 → 兩軸頂端 max 標籤佔比差 3.3% → 軸看起來不對齊。
+ * 解決：我們自己先 round 到 100 的倍數（200/100=2.0, 100/100=1.0）→ Chart.js 不會再 round。
+ */
+function niceToHundredStep(value) {
+  if (value <= 0) return 0;
+  const exp = Math.floor(Math.log10(value));
+  const f = value / Math.pow(10, exp);
+  let nf;
+  if (f < 1.5) nf = 1;
+  else if (f < 3) nf = 2;
+  else if (f < 7) nf = 5;
+  else nf = 10;
+  return nf * Math.pow(10, exp);
 }
 
 /**
