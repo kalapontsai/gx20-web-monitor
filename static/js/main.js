@@ -819,6 +819,7 @@ function buildPowerChart() {
     },
   });
   applyPowerYAxisToChart();
+  alignPowerYAxesToData();  // v8.4：build 完立即套動態 max（即使無資料也用預設 5/250）
   if (xMin > 0) {
     const now = Date.now();
     pwChart.options.scales.x.min = now - xMin * 60 * 1000;
@@ -924,7 +925,10 @@ async function loadHistory(gen) {
       }
     }
     chart.update("none");
-    if (pwChart) pwChart.update("none");
+    if (pwChart) {
+      alignPowerYAxesToData();  // v8.4：loadHistory 補完後用實際資料峰重算 I/W max
+      pwChart.update("none");
+    }
     // v8.2：loadHistory 完後電力圖 yW width 才會用「實際資料範圍」算 → 再對齊一次
     alignTempChartToPowerYAxis();
   } catch (e) {
@@ -1011,6 +1015,43 @@ function prunePowerData() {
     }
   }
   // 電力線不另設點數上限（3 條 × 6 工位 = 18 條線，遠小於溫度 120 條）
+  // v8.4：prune 完後順手對齊 I/W 兩軸的 0 跟頂端位置
+  alignPowerYAxesToData();
+}
+
+/**
+ * v8.4：動態對齊 I 軸與 W 軸的 0 與 max 位置。
+ *
+ * 問題：I 軸 (0~5 A) 與 W 軸 (0~250 W) 的 max 預設寫死，
+ *   跟實際數據不成比例（W ≈ I × V，V~220V），
+ *   導致 I 線的 0 點跟 W 線的 0 點在視覺上不在同一條水平線上。
+ *
+ * 解法：永遠用「可見資料的 I 峰 × 1.1」當 yI.max、
+ *   「可見資料的 W 峰 × 1.1」當 yW.max。
+ *   兩軸的 min 都用 0，max 比例相同（都是自己的峰 × 1.1），
+ *   → 兩條 0 線重疊、兩條 max 線也重疊，I 線和 W 線視覺對齊。
+ *
+ * 設定頁的 I.max / W.max 欄位 → 由系統接管，自動 disable（兩軸不可能用不同 max 還對齊）。
+ * V 軸不受影響（V 是電壓，跟 I/W 沒成比例關係）。
+ */
+function alignPowerYAxesToData() {
+  if (!pwChart) return;
+  let iPeak = 0, wPeak = 0;
+  for (const ds of pwChart.data.datasets) {
+    if (!ds.data || ds.data.length === 0) continue;
+    if (ds.pointKey === "i") {
+      for (const p of ds.data) {
+        if (Number.isFinite(p.y) && p.y > iPeak) iPeak = p.y;
+      }
+    } else if (ds.pointKey === "w") {
+      for (const p of ds.data) {
+        if (Number.isFinite(p.y) && p.y > wPeak) wPeak = p.y;
+      }
+    }
+  }
+  const HEAD_ROOM = 1.1;  // 頂端預留 10% 空間
+  pwChart.options.scales.yI.max = iPeak > 0 ? iPeak * HEAD_ROOM : 5;
+  pwChart.options.scales.yW.max = wPeak > 0 ? wPeak * HEAD_ROOM : 250;
 }
 
 /**

@@ -462,52 +462,44 @@ function fillPwAxisFields(st) {
   const vMinEl  = document.querySelector('[data-pwaxis-field="v-min"]');
   const vMaxEl  = document.querySelector('[data-pwaxis-field="v-max"]');
   const iMinEl  = document.querySelector('[data-pwaxis-field="i-min"]');
+  // v8.4：i_max / w_max 永遠 disabled（系統接管），這裡只填一次讓使用者知道當前值
   const iMaxEl  = document.querySelector('[data-pwaxis-field="i-max"]');
   const wMinEl  = document.querySelector('[data-pwaxis-field="w-min"]');
   const wMaxEl  = document.querySelector('[data-pwaxis-field="w-max"]');
   const vAutoEl = document.querySelector('[data-pwaxis-field="v-auto"]');
-  const iAutoEl = document.querySelector('[data-pwaxis-field="i-auto"]');
-  const wAutoEl = document.querySelector('[data-pwaxis-field="w-auto"]');
-  if (!vMinEl || !vMaxEl || !iMinEl || !iMaxEl || !wMinEl || !wMaxEl || !vAutoEl || !iAutoEl || !wAutoEl) return;
+  if (!vMinEl || !vMaxEl || !iMinEl || !wMinEl || !vAutoEl) return;
   vMinEl.value  = entry.v.min;
   vMaxEl.value  = entry.v.max;
   iMinEl.value  = entry.i.min;
-  iMaxEl.value  = entry.i.max;
+  if (iMaxEl) iMaxEl.value = entry.i.max;  // disabled，純展示
   wMinEl.value  = entry.w.min;
-  wMaxEl.value  = entry.w.max;
+  if (wMaxEl) wMaxEl.value = entry.w.max;  // disabled，純展示
   vAutoEl.checked = !!entry.v.auto;
-  iAutoEl.checked = !!entry.i.auto;
-  wAutoEl.checked = !!entry.w.auto;
-  // 動態縮放啟用時 → 對應欄位半透明
-  applyPwAxisAutoState(entry.v.auto, entry.i.auto, entry.w.auto);
+  // v8.4：I/W 永遠視為 auto
+  applyPwAxisAutoState(entry.v.auto, true, true);
 }
 
-function applyPwAxisAutoState(vAuto, iAuto, wAuto) {
+function applyPwAxisAutoState(vAuto, _iAuto, _wAuto) {
   const vMinEl  = document.querySelector('[data-pwaxis-field="v-min"]');
   const vMaxEl  = document.querySelector('[data-pwaxis-field="v-max"]');
-  const iMinEl  = document.querySelector('[data-pwaxis-field="i-min"]');
+  // v8.4：i_max / w_max 永遠 disabled（系統接管，不論 vAuto 如何）
   const iMaxEl  = document.querySelector('[data-pwaxis-field="i-max"]');
-  const wMinEl  = document.querySelector('[data-pwaxis-field="w-min"]');
   const wMaxEl  = document.querySelector('[data-pwaxis-field="w-max"]');
   if (vMinEl) { vMinEl.disabled = vAuto; vMinEl.style.opacity = vAuto ? "0.5" : "1"; }
   if (vMaxEl) { vMaxEl.disabled = vAuto; vMaxEl.style.opacity = vAuto ? "0.5" : "1"; }
-  if (iMinEl) { iMinEl.disabled = iAuto; iMinEl.style.opacity = iAuto ? "0.5" : "1"; }
-  if (iMaxEl) { iMaxEl.disabled = iAuto; iMaxEl.style.opacity = iAuto ? "0.5" : "1"; }
-  if (wMinEl) { wMinEl.disabled = wAuto; wMinEl.style.opacity = wAuto ? "0.5" : "1"; }
-  if (wMaxEl) { wMaxEl.disabled = wAuto; wMaxEl.style.opacity = wAuto ? "0.5" : "1"; }
+  if (iMaxEl) { iMaxEl.disabled = true;  iMaxEl.style.opacity = "0.5"; }
+  if (wMaxEl) { wMaxEl.disabled = true;  wMaxEl.style.opacity = "0.5"; }
 }
 
 function bindPwAxisFields() {
   const vMinEl = document.querySelector('[data-pwaxis-field="v-min"]');
   const vMaxEl = document.querySelector('[data-pwaxis-field="v-max"]');
   const iMinEl = document.querySelector('[data-pwaxis-field="i-min"]');
-  const iMaxEl = document.querySelector('[data-pwaxis-field="i-max"]');
+  // v8.4：i_max / w_max 永遠 disabled（系統接管）
+  // w_min 保留可調（極少數場景需要 W 起始不為 0，例如偏壓觀察）
   const wMinEl = document.querySelector('[data-pwaxis-field="w-min"]');
-  const wMaxEl = document.querySelector('[data-pwaxis-field="w-max"]');
   const vAutoEl = document.querySelector('[data-pwaxis-field="v-auto"]');
-  const iAutoEl = document.querySelector('[data-pwaxis-field="i-auto"]');
-  const wAutoEl = document.querySelector('[data-pwaxis-field="w-auto"]');
-  if (!vMinEl || !vMaxEl || !iMinEl || !iMaxEl || !wMinEl || !wMaxEl || !vAutoEl || !iAutoEl || !wAutoEl) return;
+  if (!vMinEl || !vMaxEl || !iMinEl || !wMinEl || !vAutoEl) return;
 
   // 取得目前 tab 的站位（電力 Y 軸 tab 自己的，不一定等同 currentStation）
   let activeStation = STATIONS[0];
@@ -542,12 +534,9 @@ function bindPwAxisFields() {
     if ("v_min"  in patch) cur.v.min  = patch.v_min;
     if ("v_max"  in patch) cur.v.max  = patch.v_max;
     if ("i_min"  in patch) cur.i.min  = patch.i_min;
-    if ("i_max"  in patch) cur.i.max  = patch.i_max;
     if ("w_min"  in patch) cur.w.min  = patch.w_min;
-    if ("w_max"  in patch) cur.w.max  = patch.w_max;
     if ("v_auto" in patch) cur.v.auto = patch.v_auto;
-    if ("i_auto" in patch) cur.i.auto = patch.i_auto;
-    if ("w_auto" in patch) cur.w.auto = patch.w_auto;
+    // v8.4：i_max / w_max / i_auto / w_auto 都不再由使用者控制
     GX20State.update("pw_axis", s.pw_axis);
   };
 
@@ -558,25 +547,11 @@ function bindPwAxisFields() {
   vMaxEl.addEventListener("change", () => writeBack({ v_max: num(vMaxEl) }));
   iMinEl.addEventListener("input",  () => writeBack({ i_min: num(iMinEl) }));
   iMinEl.addEventListener("change", () => writeBack({ i_min: num(iMinEl) }));
-  iMaxEl.addEventListener("input",  () => writeBack({ i_max: num(iMaxEl) }));
-  iMaxEl.addEventListener("change", () => writeBack({ i_max: num(iMaxEl) }));
   wMinEl.addEventListener("input",  () => writeBack({ w_min: num(wMinEl) }));
   wMinEl.addEventListener("change", () => writeBack({ w_min: num(wMinEl) }));
-  wMaxEl.addEventListener("input",  () => writeBack({ w_max: num(wMaxEl) }));
-  wMaxEl.addEventListener("change", () => writeBack({ w_max: num(wMaxEl) }));
   vAutoEl.addEventListener("change", () => {
     const v = vAutoEl.checked;
-    applyPwAxisAutoState(v, iAutoEl.checked, wAutoEl.checked);
+    applyPwAxisAutoState(v, true, true);  // v8.4：I/W 永遠視為 auto，欄位保持灰掉
     writeBack({ v_auto: v });
-  });
-  iAutoEl.addEventListener("change", () => {
-    const i = iAutoEl.checked;
-    applyPwAxisAutoState(vAutoEl.checked, i, wAutoEl.checked);
-    writeBack({ i_auto: i });
-  });
-  wAutoEl.addEventListener("change", () => {
-    const w = wAutoEl.checked;
-    applyPwAxisAutoState(vAutoEl.checked, iAutoEl.checked, w);
-    writeBack({ w_auto: w });
   });
 }
