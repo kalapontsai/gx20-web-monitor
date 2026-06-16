@@ -150,6 +150,18 @@
       markDirtyIfChanged(this.sess);
       refreshSaveButtons();
 
+      // v8.1.1：第一次 init 時，把 sessionStorage 殘留的設定自動同步回 server。
+      // 背景：v8.1 之前使用者改 X 軸/別名/Y 軸只寫 sessionStorage 沒 POST server，
+      // 造成「這台瀏覽器看得到、改別台看不到」的不同步狀況。
+      // 修法：init 完後如果 sess 內有真實的設定值（排除 _saved/theme），
+      // 且跟 server baseline 不一致，就 debounce 一次自動 save 上去。
+      // 這是「陣地轉移」：把舊 sessionStorage 殘留轉成 server 端 source of truth。
+      //
+      // ⚠️ v8.1.2 起被拿掉：此路徑會造成跨工位污染
+      // （sess 內只有工位 N，merge 後 settings.ch_alias 只剩工位 N，
+      //  整包 POST 出去後 server 其他工位別名被 set 為空 / 殘值）
+      this._migrateLegacySessionIfNeeded();
+
       if (window.console && console.debug) {
         console.debug("[GX20State] init: sess keys=", Object.keys(this.sess),
           "settings.ch_visibility[工位1][0..4]=",
@@ -157,6 +169,30 @@
       }
 
       return this.settings;
+    },
+
+    /**
+     * v8.1.1：init 時把 sessionStorage 殘留的舊設定自動同步回 server。
+     * 判斷：sess 內有非 _saved/theme 的 key，且值跟 server baseline 不同。
+     * 注意：完全等於 baseline 時不觸發 save（避免無意義的 request）。
+     */
+    _migrateLegacySessionIfNeeded() {
+      const keys = Object.keys(this.sess).filter(k =>
+        !k.startsWith("_") && k !== "theme" && this.sess[k] !== undefined
+      );
+      if (keys.length === 0) return;
+      // 逐 key 比對：sess 內值跟 server baseline 不同 → 需要同步
+      const drifted = keys.filter(k => {
+        try {
+          return JSON.stringify(this.sess[k]) !== JSON.stringify(this.baseline[k]);
+        } catch { return true; }
+      });
+      if (drifted.length > 0) {
+        console.info("[GX20State] init: detecting", drifted.length,
+          "個 sessionStorage 殘留設定與 server 不一致，自動同步 server",
+          "(drifted keys:", drifted.join(","), ")");
+        _scheduleSave();
+      }
     },
 
     /**
