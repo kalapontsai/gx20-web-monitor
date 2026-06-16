@@ -136,6 +136,13 @@
 - **根治 v8.1.1 跨工位污染**：遠端根本不能改，sessionStorage 殘留不污染 server
 - 詳細 → [CHANGELOG §6.6–6.7](CHANGELOG.md#66-v812--遠端瀏覽器鎖死根治方案)
 
+### v8.1.3 — `POST /api/clear` 也鎖遠端
+
+- **決策**：「清除此工位」是不可逆操作（即使有 archive 也只是防呆），跟設定一樣鎖本機
+- **server**：`POST /api/clear` 開頭加 `_is_local_request()` 檢查，遠端 → 403 + 「清除資料權限僅限 OTA 本機瀏覽器，遠端不能清。」
+- **前端**：遠端時「清除此工位」按鈕 `display: none` 隱藏
+- 詳細 → [CHANGELOG §6.10](CHANGELOG.md#610-v813--post-apiclear-也鎖遠端)
+
 ### v5.0 — 6 工位獨立 DB + 清除前歸檔
 
 **背景**：6 工位非同步上下線，原有單一 `data/gx20.db` 設計會造成：

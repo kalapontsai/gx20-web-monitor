@@ -166,6 +166,10 @@ function applyRemoteUiLocks() {
   if (GX20State.isLocal) return;  // 本機全開
   const settingsBtn = document.getElementById("settingsBtn");
   if (settingsBtn) settingsBtn.style.display = "none";
+  // v8.1.3：清除此工位是「不可逆操作」（即使有 archive 也只是防呆），
+  // 跟設定一起鎖遠端，避免按錯連結就把工位資料刪了
+  const clearBtn = document.getElementById("clearBtn");
+  if (clearBtn) clearBtn.style.display = "none";
   for (const id of ["chartXSel", "rateSel", "avgSel"]) {
     const s = document.getElementById(id);
     if (s) s.disabled = true;

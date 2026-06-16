@@ -930,6 +930,20 @@ def api_clear():
     """
     清除指定工位的 samples（v5）。
 
+    v8.1.3：跟設定一樣鎖本機。
+    清除是不可逆操作（即使有 archive 只能防「意外」，不能保證使用者就是要
+    刪資料），違規最嚴重。如果讓遠端也能清，那只一個關錯的腳本或按錯的
+    連結就把现场工位資料刪了。
+    """
+    # v8.1.3：跟 /api/settings 一樣鎖本機
+    if not _is_local_request():
+        return jsonify({
+            "ok": False,
+            "error": "readonly",
+            "message": "清除資料權限僅限 OTA 本機瀏覽器，遠端不能清。"
+        }), 403
+
+    """
     接收：
       - body JSON 或 query string 都可以
         - station  = '工位5'         必填
