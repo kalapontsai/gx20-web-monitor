@@ -142,6 +142,8 @@ async function init() {
 
   buildChart();
   buildPowerChart();
+  // v8.2：rAF 雙重保險對齊（buildChart/buildPowerChart 任一順序問題都涵蓋）
+  requestAnimationFrame(() => alignTempChartToPowerYAxis());
   loadHistory();
 
   // 定期拉 PW 連線狀態（badge）
@@ -150,6 +152,20 @@ async function init() {
 
   // v6 游標模式
   initCursorMode();
+
+  // v8.2：視窗 resize 後電力圖 layout 重算 → 重對齊溫度圖 X 軸
+  // 用 ResizeObserver 監聽主容器（不是 window，避免 sidebar/devtools 變化誤觸）
+  let _alignRafPending = false;
+  const ro = new ResizeObserver(() => {
+    if (_alignRafPending) return;
+    _alignRafPending = true;
+    requestAnimationFrame(() => {
+      _alignRafPending = false;
+      alignTempChartToPowerYAxis();
+    });
+  });
+  const chartAreaEl = document.querySelector(".chart-area");
+  if (chartAreaEl) ro.observe(chartAreaEl);
 }
 
 // 站點選擇另外存（不歸 GX20State 核心設定管）
@@ -326,6 +342,8 @@ async function switchStation(newStation) {
   updatePowerReadout(null);
   rebuildChart();
   rebuildPowerChart();
+  // v8.2：rAF 雙重保險對齊（解決「溫度先建 / 電力先建」順序差異）
+  requestAnimationFrame(() => alignTempChartToPowerYAxis());
   // v6：rebuildChart() 內已經會用新站位的 y_axis 套 Y 軸
   await loadHistory(myGen);
   // loadHistory 內部會自己檢查世代號
@@ -527,6 +545,35 @@ function buildChart() {
           grid:  { color: c.grid },
           title: { display: true, text: "溫度 (°C)", color: c.text },
           // v6：Y 軸 per-station。這裡不再硬編 yMin/yMax，改在 build 後 applyYAxisToChart() 決定。
+          // v8.2：afterFit hook 根據電力圖 Y 軸總寬調整本軸 width，讓兩圖 X 軸寬度一致
+          afterFit: _tempYAfterFit,
+        },
+        // v8.2：右側佔位軸，用來對齊電力圖右軸 (yV) 的寬度。
+        // Chart.js 4 的 chartArea 寬度 = canvas 寬 − 左軸寬 − 右軸寬，
+        // 電力圖右軸 (yV) 會撐寬 → 電力圖 chartArea 變窄。
+        // 在溫度圖也加一個右軸，用 afterFit 設定 width 模擬右軸佔位。
+        // display 不關（Chart.js 4 會跳過 display:false 的 afterFit），
+        // 但 ticks.display:false + grid.drawOnChartArea:false 達到「不畫」效果。
+        // 軸名給 "yR"，但所有 dataset 都不指定 yAxisID: "yR"（都是 "y"），
+        // 所以這軸是純佔位，不會被誤用。
+        yR: {
+          type: "linear",
+          position: "right",
+          display: true,            // 必須 true，否則 afterFit 不被呼叫
+          grid:  { drawOnChartArea: false },
+          ticks: { display: false }, // 但 tick 不顯示
+          title: { display: false }, // 軸標題也不顯示
+          border: { display: false }, // 不畫軸線
+          offset: false,
+          afterFit: (scale) => {
+            // cursor 模式：不要動 scale.width（會導致 Chart.js 4 layout 出 NaN）
+            if (document.body.classList.contains("cursor-mode")) {
+              return;
+            }
+            if (pwChart && pwChart.scales && pwChart.scales.yV) {
+              scale.width = pwChart.scales.yV.width || 0;
+            }
+          },
         },
       },
     },
@@ -541,10 +588,79 @@ function buildChart() {
     chart.options.scales.x.min = now - xMin * 60 * 1000;
     chart.options.scales.x.max = now;
   }
+  // 對齊在 init / switchStation 用 rAF 統一處理（解決 build 順序問題）
 }
 
 function rebuildChart() { buildChart(); }
 function rebuildPowerChart() { buildPowerChart(); }
+
+// =============================================================
+// v8.2：對齊溫度圖 X 軸寬度 = 電力圖 X 軸寬度
+//
+// 為什麼：電力圖有 3 個 Y 軸 (yI/yW 左、yV 右)，佔用空間比溫度圖的單 Y 軸多。
+// Chart.js 預設各自依 Y 軸 tick 寬度算 chartArea，會造成兩圖 X 軸寬度對不上、
+// 時間軸刻度錯位，無法直接比對。
+//
+// 設計決策（已與 owner 確認）：
+//   1. 兩圖 X 軸寬度一致 → 溫度圖的 chartArea 寬度 = 電力圖的 chartArea 寬度
+//   2. 電力 Y 軸寬度優先（多軸佔位是必要成本）
+//   3. 溫度圖左側多出空間 → 留白，可以接受
+//
+// 實作：量測電力圖 3 條 Y 軸的實際 width (layout 算完後的值)，
+// 把它寫進溫度圖 scales.y.width，Chart.js 重算 layout 後溫度圖 chartArea 寬度
+// 就會跟電力圖一致。
+//
+// 關鍵設計：不能用「options.scales.y.width = N → chart.update()」這種寫法，
+// 因為 Chart.js v4 會 cache 算出來的 scale._width，options.width 只在
+// 「建構 + 第一次 layout」被讀到。後續 update 不會重新計算。
+// 正確做法：用 scales.y.afterFit(scale) 這個 hook，它是 layout 算完 width 後
+// 的最後一個 callback，修改 scale.width 會被下一步用上。
+//
+// 邊角：
+//   - 電力圖隱藏 (cursor-mode) 時不對齊（此時溫度圖應 100% 寬）
+//   - 電力圖尚未 build 好時不對齊（chart.scales 為空）
+//   - resize / Y 軸 min/max 變更後都要重對齊
+// =============================================================
+// 記下「電力圖左側 Y 軸總寬」與「右側 Y 軸寬」，避免每次 layout 都重覆計算
+let _pwYLeftCache = -1;
+let _pwYRightCache = -1;
+
+function _computeAndCachePwYWidths() {
+  if (!pwChart || !pwChart.scales || !pwChart.scales.yI || !pwChart.scales.yW || !pwChart.scales.yV) return;
+  const left  = (pwChart.scales.yI.width || 0) + (pwChart.scales.yW.width || 0);
+  const right = pwChart.scales.yV.width || 0;
+  if (left > 0)  _pwYLeftCache  = left;
+  if (right > 0) _pwYRightCache = right;
+}
+
+function alignTempChartToPowerYAxis() {
+  if (!chart || !pwChart) return;
+  if (document.body.classList.contains("cursor-mode")) return;
+  // 第一次 update：讓電力圖 layout 算完 yI/yW/yV.width，填進 cache
+  _computeAndCachePwYWidths();
+  // 第二次 update：讓溫度圖的 afterFit hook 讀到 cache 設 scale.width
+  // （Chart.js 4 同一個 update() 內 scale.afterFit 是在 layout 期間被叫，
+  //  不是 update 之後。所以需要兩次 update 才能讓「電力 layout → cache →
+  // 溫度 layout with cache」這個順序生效。）
+  if (_pwYLeftCache > 0 || _pwYRightCache > 0) {
+    chart.update("none");
+    chart.update("none");
+  } else {
+    chart.update("none");
+  }
+}
+
+function _tempYAfterFit(scale) {
+  // cursor 模式：電力圖隱藏，溫度圖恢復預設行為（width 由 Chart.js 自動算）
+  // 注意：不要動 scale.width = undefined（會導致 Chart.js 4 layout 出 NaN）
+  if (document.body.classList.contains("cursor-mode")) {
+    return;
+  }
+  // 溫度圖左軸 width = 電力圖左側 Y 軸總寬 (yI + yW)
+  if (pwChart && pwChart.scales && pwChart.scales.yI && pwChart.scales.yW) {
+    scale.width = (pwChart.scales.yI.width || 0) + (pwChart.scales.yW.width || 0);
+  }
+}
 
 // =============================================================
 // v7：電力圖表（PW3335）
@@ -615,6 +731,9 @@ function applyPowerYAxisToChart() {
     if (Number.isFinite(w.min)) pwChart.options.scales.yW.min = w.min;
     if (Number.isFinite(w.max)) pwChart.options.scales.yW.max = w.max;
   }
+  // v8.2：Y 軸範圍變更後，電力圖 layout 會重算 → 對齊溫度圖
+  // 注意：此函式只改 options，需 pwChart.update() 真正重 layout 才會反映
+  // （buildPowerChart / 設定頁 save 後會觸發 update，這裡只負責「寫進去」）
 }
 
 function getPwColor(key) {
@@ -705,6 +824,7 @@ function buildPowerChart() {
     pwChart.options.scales.x.min = now - xMin * 60 * 1000;
     pwChart.options.scales.x.max = now;
   }
+  // 對齊在 init / switchStation 用 rAF 統一處理（解決 build 順序問題）
 }
 
 /**
@@ -740,6 +860,8 @@ function applyThemeToPwChart() {
   if (pwChart.options.scales.yV.ticks) pwChart.options.scales.yV.ticks.color = c.text;
   if (pwChart.options.scales.yV.title) pwChart.options.scales.yV.title.color = c.text;
   pwChart.update("none");
+  // v8.2：主題切換可能影響 tick 文字渲染寬度 → 重對齊
+  alignTempChartToPowerYAxis();
 }
 
 // 監聽 body 的 data-theme 屬性變更（自訂事件）→ 套用新顏色
@@ -803,6 +925,8 @@ async function loadHistory(gen) {
     }
     chart.update("none");
     if (pwChart) pwChart.update("none");
+    // v8.2：loadHistory 完後電力圖 yW width 才會用「實際資料範圍」算 → 再對齊一次
+    alignTempChartToPowerYAxis();
   } catch (e) {
     if (myGen === loadGen) console.error("loadHistory:", e);
   }
@@ -1220,6 +1344,9 @@ function setCursorMode(mode) {
       updateReadoutTable(null);
       updatePowerReadout(null);
     }
+    // v8.2：切回 live 後電力圖 display 恢復 → 電力圖 layout 重算需要 1 幀
+    // 用 rAF 等 Chart.js 完成後再對齊溫度圖 X 軸寬度
+    requestAnimationFrame(() => alignTempChartToPowerYAxis());
   } else {
     cursorBtn.classList.add("active");
     liveBtn.classList.remove("active");
