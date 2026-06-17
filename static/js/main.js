@@ -819,7 +819,6 @@ function buildPowerChart() {
     },
   });
   applyPowerYAxisToChart();
-  alignPowerYAxesToData();  // v8.4：build 完立即套動態 max（即使無資料也用預設 5/250）
   if (xMin > 0) {
     const now = Date.now();
     pwChart.options.scales.x.min = now - xMin * 60 * 1000;
@@ -925,10 +924,7 @@ async function loadHistory(gen) {
       }
     }
     chart.update("none");
-    if (pwChart) {
-      alignPowerYAxesToData();  // v8.4：loadHistory 補完後用實際資料峰重算 I/W max
-      pwChart.update("none");
-    }
+    if (pwChart) pwChart.update("none");
     // v8.2：loadHistory 完後電力圖 yW width 才會用「實際資料範圍」算 → 再對齊一次
     alignTempChartToPowerYAxis();
   } catch (e) {
@@ -1015,79 +1011,6 @@ function prunePowerData() {
     }
   }
   // 電力線不另設點數上限（3 條 × 6 工位 = 18 條線，遠小於溫度 120 條）
-  // v8.4：prune 完後順手對齊 I/W 兩軸的 0 跟頂端位置
-  alignPowerYAxesToData();
-}
-
-/**
- * v8.4：動態對齊 I 軸與 W 軸的 0 與 max 位置。
- *
- * 問題：I 軸 (0~5 A) 與 W 軸 (0~250 W) 的 max 預設寫死，
- *   跟實際數據不成比例（W ≈ I × V，V~220V），
- *   導致 I 線的 0 點跟 W 線的 0 點在視覺上不在同一條水平線上。
- *
- * 解法：永遠用「可見資料的 I 峰 × 1.1」當 yI.max、
- *   「可見資料的 W 峰 × 1.1」當 yW.max。
- *   兩軸的 min 都用 0，max 比例相同（都是自己的峰 × 1.1），
- *   → 兩條 0 線重疊、兩條 max 線也重疊，I 線和 W 線視覺對齊。
- *
- * 設定頁的 I.max / W.max 欄位 → 由系統接管，自動 disable（兩軸不可能用不同 max 還對齊）。
- * V 軸不受影響（V 是電壓，跟 I/W 沒成比例關係）。
- */
-function alignPowerYAxesToData() {
-  // v8.5.1：共用 powerMax (W 等價) → yI.max = powerMax/100，yW.max = powerMax
-  // **關鍵**：powerMax 必須先 round 到 100 的倍數，才能讓 Chart.js 的 nice() 給出
-  // 同樣佔比（e.g. 2.0/200 = 1.0, 1.0/100 = 1.0），兩軸頂端 max 標籤才會在「同一條水平線」。
-  // v8.5 單純設 yI.max = powerMax/100（e.g. 1.9349）→ Chart.js nice 後變 2.0，
-  // 但 W 軸 nice(193.49)=200 → 兩軸頂端差 3.3% 高度 → 視覺上仍不對齊。
-  if (!pwChart) return;
-  let iPeak = 0, wPeak = 0;
-  for (const ds of pwChart.data.datasets) {
-    if (!ds.data || ds.data.length === 0) continue;
-    if (ds.pointKey === "i") {
-      for (const p of ds.data) {
-        if (Number.isFinite(p.y) && p.y > iPeak) iPeak = p.y;
-      }
-    } else if (ds.pointKey === "w") {
-      for (const p of ds.data) {
-        if (Number.isFinite(p.y) && p.y > wPeak) wPeak = p.y;
-      }
-    }
-  }
-  const HEAD_ROOM = 1.1;  // 頂端預留 10% 空間
-  const DEFAULT_POWER_MAX = 500;  // 無資料時的預設（5 A / 500 W）
-  let powerMax;
-  if (iPeak > 0 || wPeak > 0) {
-    const iAsW = iPeak * 100;  // I → W 等價
-    powerMax = Math.max(iAsW, wPeak) * HEAD_ROOM;
-  } else {
-    powerMax = DEFAULT_POWER_MAX;
-  }
-  // round powerMax 到 100 的倍數（保證 yI.max = powerMax/100 也是漂亮值）
-  // 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, ...
-  const nicePowerMax = niceToHundredStep(powerMax);
-  // 嚴格 100:1 → 兩軸 max 邊界永遠在同一條水平線
-  pwChart.options.scales.yW.max = nicePowerMax;
-  pwChart.options.scales.yI.max = nicePowerMax / 100;
-}
-
-/**
- * Round 一個正數到「1-2-5 進位」的漂亮值（與 d3-scale 的 nice() 同步）。
- * 為什麼要這個：Chart.js 在畫軸刻度時會呼叫 nice() 把 max 自動 round 到 1/2/5 進位，
- * 如果我們直接餵 raw 數字（例如 193.49），Chart.js 會 round 成 200，而 I 軸的 1.9349
- * 會 round 成 2.0 → 兩軸頂端 max 標籤佔比差 3.3% → 軸看起來不對齊。
- * 解決：我們自己先 round 到 100 的倍數（200/100=2.0, 100/100=1.0）→ Chart.js 不會再 round。
- */
-function niceToHundredStep(value) {
-  if (value <= 0) return 0;
-  const exp = Math.floor(Math.log10(value));
-  const f = value / Math.pow(10, exp);
-  let nf;
-  if (f < 1.5) nf = 1;
-  else if (f < 3) nf = 2;
-  else if (f < 7) nf = 5;
-  else nf = 10;
-  return nf * Math.pow(10, exp);
 }
 
 /**
