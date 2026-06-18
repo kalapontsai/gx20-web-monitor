@@ -102,6 +102,17 @@ a { color: var(--primary); }
 .dot.on  { background: var(--dot-on); box-shadow: 0 0 6px var(--dot-on); }
 .dot.off { background: var(--dot-off); }
 .last-ts { color: var(--text-dim); font-size: 12px; }
+.note-box {
+  padding: 4px 8px;
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font: inherit;
+  width: 160px;          /* 視覺上給的寬度；輸入限制 20 字由 maxlength 控 */
+  margin-left: auto;     /* 推到右側，跟 .conn 群組自然相鄰 */
+}
+.note-box::placeholder { color: var(--text-dim); }
 
 /* ====== 主畫面 ====== */
 main {
