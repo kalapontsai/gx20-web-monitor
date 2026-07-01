@@ -808,3 +808,48 @@ W 線 0~200 佔 W 軸 90.91%
 - 預設 max 寫死值跟實際資料不成比例時，視覺上就會出問題——「0 線對齊」是圖表可讀性的基本要求，不能假設使用者會去設定頁改 max
 - 兩軸要對齊 0 跟頂端，**前提是兩軸的「比例尺」相同**（min/max 範圍比 = 資料峰比）。動態算 max 是最直接的解
 - 「auto 旗標」語意要跟圖表行為一致——I/W 兩軸要「永遠對齊」就不該讓使用者手動改 max，UI 也要拿掉對應的 input
+
+## 9. 現況進度（2026-07-01 CSV datetime 格式 v9）
+
+### 9.1 v9 — CSV datetime 從 `%m/%d/%y` 改成 `%Y/%m/%d`
+
+**問題（大大回饋 2026-07-01 08:27）**：工廠端用 Excel 開啟匯出的 CSV，datetime 欄位 `06/30/26 23:59:00` 在 Excel 美式 / 歐式 locale 會被當成日期解析：
+
+- 兩位數年份 `26` 被 Windows 系統年份預設帶成 `2026/2027`，下一筆 `07/01/26 00:00:00` 變成 `2007/1/26 12:00:00 AM`（年/月被洗掉）
+- 24h `23:59:00` 被轉成 AM/PM 顯示 → 視覺不一致，也讓 grep / awk 之類的工具解析失敗
+
+**決策（2026-07-01 08:31）**：CSV datetime 一勞永逸改為 `YYYY/MM/DD HH:MM:SS`：
+
+- 4 位數年份明確 → Excel 不會亂猜
+- 24 小時制 → 沒有 AM/PM 歧義
+- 內部 ring buffer / DB 仍維持 ISO 格式 (`datetime.now().isoformat()`)，本變更**僅影響 CSV 匯出字串**，不影響前端 Chart.js / ring buffer 計算 / DB schema
+
+**修法**：
+
+- `app.py:1346` `api_export_csv()` 內:
+  ```python
+  # 舊
+  ts_str = b["_dt"].strftime("%m/%d/%y %H:%M:%S")
+  # 新
+  ts_str = b["_dt"].strftime("%Y/%m/%d %H:%M:%S")
+  ```
+- `app.py:1242` docstring 一併更新（標頭格式說明）
+- `app.py:585` `ts = datetime.now().replace(microsecond=0).isoformat()`：**不動**（內部用 ISO）
+
+**驗證**：
+
+- `scripts/repro_csv_datetime.py` 跑 6 case（正常 / 壓縮機啟動 / 跨日 / half-up 邊界 / 全 None），全部 datetime 符合 `^\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}$`
+- E2E：用真實 CSV (工位4 1440min) 灌進 ring buffer，模擬 endpoint 輸出，20 筆 datetime 全是 `2026/06/30 HH:MM:SS` 格式
+- 跨日邊界 `06/30 23:59 → 07/01 00:00` 正確
+
+**下游影響**：無
+
+- 前端 JS 從來不解析 CSV datetime 字串，Chart.js 用 date-fns adapter 吃 ISO ts → 零影響
+- DB schema / ring buffer shape / 推播頻率 → 零變更
+- 任何「解析 CSV datetime 的腳本」需要更新（目前看 OTA 端 / 本地端都沒有這類腳本）
+
+**教訓**：
+
+- CSV 格式選擇：當下游可能有 Excel 時，**4 位數年份 + 24h** 是最不會誤判的格式
+- 「改了 CSV 字串」≠「改了資料結構」，這次只是輸出格式化，所以可以放膽改
+- 「BOM + 逗號分隔」對 Excel 已經是最好的「別誤判」策略，但 datetime 欄位本身還是要選不易混淆的格式

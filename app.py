@@ -1239,7 +1239,7 @@ def api_export_csv(station: str):
     格式：
       - 編碼: UTF-8-sig (BOM)
       - 標頭: datetime, 別名1, 別名2, ... 別名20, V, I, W
-      - 時間格式: %m/%d/%y %H:%M:%S
+      - 時間格式: %Y/%m/%d %H:%M:%S (24h, 4 位數年份；避免 Excel 誤判 AM/PM / 年份)
       - 不包含 rate / avg
       - 不考慮隱藏狀態 → 20 個接點都出
     電力值（V/I/W）：
@@ -1343,7 +1343,13 @@ def api_export_csv(station: str):
     writer = csv.writer(buf, lineterminator="\n")
     writer.writerow(headers)
     for b in sorted_buckets:
-        ts_str = b["_dt"].strftime("%m/%d/%y %H:%M:%S")
+        # v9：CSV datetime 改成 YYYY/MM/DD HH:MM:SS (24h)
+        # - 舊格式 %m/%d/%y 在 Excel 美式/歐式 locale 會被當日期解析，導致
+        #   "26" 被誤讀成 2026/2027 (兩位數年份)、時間被轉成 AM/PM 顯示。
+        # - 新格式 4 位數年份明確、24 小時制，Excel 不會亂轉。
+        # - 內部 ring buffer / DB 仍維持 ISO 格式 (datetime.now().isoformat())，
+        #   本變更僅影響 CSV 匯出字串。
+        ts_str = b["_dt"].strftime("%Y/%m/%d %H:%M:%S")
         row = [ts_str]
         for i in range(20):
             if b["any"][i]:
